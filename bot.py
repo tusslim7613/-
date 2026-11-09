@@ -22,7 +22,9 @@ QUEST_BOARD_TIER_4 = 1442714869966311535
 
 # 2. ใส่ ID ห้อง "ห้อง Join เควส" (ที่เดียวรวมทุกระดับเลเวล)
 QUEST_JOIN_FORUM_ID = 1387274730330914907
-DM_ROLE_NAME = "Tool"  # ชื่อ Role ของ DM
+
+# ✅ เปลี่ยนมาใช้ Role ID แทนชื่อ เพื่อความแม่นยำ 100%
+DM_ROLE_ID = 123456789012345678  # 👈 ใส่ ID ของยศ Tool (คลิกขวาที่ยศในดิสคอร์ดแล้ว Copy ID มาวาง)
 
 
 # ============================================================
@@ -83,9 +85,9 @@ class EditTimeView(discord.ui.View):
         custom_id="quest:edit_time"
     )
     async def edit_time_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # ✅ เช็คสิทธิ์: ให้แก้ได้เฉพาะ "ผู้จองเควส" หรือ "DM" เท่านั้น
+        # ✅ เช็คสิทธิ์: ให้แก้ได้เฉพาะ "ผู้จองเควส" หรือ "DM (ตรวจจาก ID)" เท่านั้น
         is_owner = str(interaction.user.id) in interaction.message.content
-        is_dm = discord.utils.get(interaction.user.roles, name=DM_ROLE_NAME) is not None
+        is_dm = any(role.id == DM_ROLE_ID for role in interaction.user.roles)
 
         if not (is_owner or is_dm):
             await interaction.response.send_message("❌ คุณไม่ใช่ผู้จองเควสนี้ หรือไม่ใช่ DM ไม่สามารถแก้ไขเวลาได้ครับ", ephemeral=True)
@@ -224,11 +226,10 @@ class QuestBot(commands.Bot):
     async def setup_hook(self):
         # ลงทะเบียนปุ่มให้ทำงานได้ตลอดแม้บอทรีสตาร์ท
         self.add_view(BookingView())
-        self.add_view(EditTimeView())  # ✅ ลงทะเบียนปุ่มแก้ไขเวลา
+        self.add_view(EditTimeView())
 
         my_guild = discord.Object(id=SERVER_ID)
         self.tree.copy_global_to(guild=my_guild)
-        # ไม่ต้อง sync อัตโนมัติ ป้องกันโดนแบน API ให้พิมพ์ !sync เอาเอง
 
     async def on_ready(self):
         print(f"✅ ล็อกอินแล้วในชื่อ {self.user} (ID: {self.user.id})")
@@ -273,7 +274,8 @@ async def sync(ctx):
     app_commands.Choice(name="กระดาน Tier 4 (Lv 17-20)", value=str(QUEST_BOARD_TIER_4)),
 ])
 @app_commands.guild_only()
-@app_commands.checks.has_role(DM_ROLE_NAME)
+# ✅ อัปเดตตัวเช็กสิทธิ์ ให้ใช้ Role ID ในการเช็กแทนชื่อ
+@app_commands.checks.has_role(DM_ROLE_ID)
 async def create_quest(
         interaction: discord.Interaction,
         quest_board: app_commands.Choice[str],
@@ -339,7 +341,8 @@ async def create_quest(
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingRole):
-        msg = f"⛔ คำสั่งนี้ใช้ได้เฉพาะผู้ที่มี Role **{DM_ROLE_NAME}** เท่านั้น"
+        # ✅ เปลี่ยนข้อความแจ้งเตือนให้ใช้ Tag รูปแบบ ID จะได้ Mention ยศในห้องแชทได้ถูกต้อง
+        msg = f"⛔ คำสั่งนี้ใช้ได้เฉพาะผู้ที่มี Role <@&{DM_ROLE_ID}> เท่านั้น"
     else:
         msg = "❌ เกิดข้อผิดพลาดบางอย่าง กรุณาลองใหม่อีกครั้ง"
         print(f"[Error] {error!r}")
