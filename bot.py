@@ -26,15 +26,85 @@ DM_ROLE_NAME = "DM"  # ชื่อ Role ของ DM
 
 
 # ============================================================
-# 🧩 Modal: หน้าต่างกรอกวันเวลาของผู้เล่น
+# 🛠️ Modal & View สำหรับการ "แก้ไขเวลา" ในห้อง Join เควส
+# ============================================================
+class EditTimeModal(discord.ui.Modal, title="เลื่อน / แก้ไขเวลา"):
+    new_schedule = discord.ui.TextInput(
+        label="ระบุวันและเวลาใหม่",
+        placeholder="เช่น 02/12/26 21.00",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=50,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        message = interaction.message
+        thread = interaction.channel
+
+        # 1. แก้ไขข้อความในโพสต์ (หาบรรทัดเก่าแล้วแทนที่ด้วยเวลาใหม่)
+        old_content = message.content
+        lines = old_content.split('\n')
+        new_lines = []
+        for line in lines:
+            if line.startswith("🗓️ **วันเวลาที่สะดวก:**"):
+                new_lines.append(f"🗓️ **วันเวลาที่สะดวก:** {self.new_schedule.value}")
+            else:
+                new_lines.append(line)
+        new_content = '\n'.join(new_lines)
+
+        # 2. แก้ไขชื่อ Thread (หัวกระทู้)
+        old_thread_name = thread.name
+        # ตัดเวลาเก่าที่อยู่ในวงเล็บ [...] ออก แล้วเอาเวลาใหม่ใส่เข้าไป
+        if "] " in old_thread_name:
+            suffix = old_thread_name.split("] ", 1)[1]
+        else:
+            suffix = old_thread_name
+        
+        new_thread_name = f"[{self.new_schedule.value}] {suffix}"[:100]
+
+        try:
+            # อัปเดตทั้งชื่อกระทู้ และ ข้อความ
+            await thread.edit(name=new_thread_name)
+            await message.edit(content=new_content)
+            await interaction.followup.send("✅ แก้ไขเวลานัดหมายเรียบร้อยแล้ว!", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ เกิดข้อผิดพลาดในการอัปเดต: {e}", ephemeral=True)
+
+
+class EditTimeView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    
+    @discord.ui.button(
+        label="⏳ เลื่อน/แก้ไขเวลา",
+        style=discord.ButtonStyle.primary,
+        custom_id="quest:edit_time"
+    )
+    async def edit_time_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # ✅ เช็คสิทธิ์: ให้แก้ได้เฉพาะ "ผู้จองเควส" หรือ "DM" เท่านั้น
+        is_owner = str(interaction.user.id) in interaction.message.content
+        is_dm = discord.utils.get(interaction.user.roles, name=DM_ROLE_NAME) is not None
+
+        if not (is_owner or is_dm):
+            await interaction.response.send_message("❌ คุณไม่ใช่ผู้จองเควสนี้ หรือไม่ใช่ DM ไม่สามารถแก้ไขเวลาได้ครับ", ephemeral=True)
+            return
+
+        # เปิดหน้าต่างให้กรอกเวลาใหม่
+        await interaction.response.send_modal(EditTimeModal())
+
+
+# ============================================================
+# 🧩 Modal: หน้าต่างกรอกวันเวลาของผู้เล่นตอนจองครั้งแรก
 # ============================================================
 class BookingModal(discord.ui.Modal, title="จองเควส"):
     schedule = discord.ui.TextInput(
         label="ระบุวันและเวลาที่คุณสะดวกเล่น",
-        placeholder="เช่น 01/12/26 20.00",
+        placeholder="เช่น [01/12/26 20.00] ",
         style=discord.TextStyle.short,
         required=True,
-        max_length=50, # จำกัดความยาวนิดหน่อยเพื่อไม่ให้ชื่อหัวโพสต์ล้น
+        max_length=50,
     )
 
     def __init__(self, quest_title: str, quest_description: str, recommended_level: str, image_url: str = None):
@@ -78,13 +148,14 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
             except Exception:
                 content += f"\n\n{self.image_url}"
 
-        # ✅ แก้ไขตรงนี้: เอาวันเวลา (self.schedule.value) ขึ้นไปไว้หน้าสุดของชื่อ Thread
+        # นำเวลาไปใส่ไว้หน้าสุดของชื่อกระทู้
         thread_name = f"[{self.schedule.value}] {self.quest_title} - {interaction.user.display_name}"[:100]
 
         kwargs = {
             "name": thread_name,
             "content": content,
-            "allowed_mentions": discord.AllowedMentions(users=[interaction.user])
+            "allowed_mentions": discord.AllowedMentions(users=[interaction.user]),
+            "view": EditTimeView()  # ✅ เพิ่มปุ่มแก้ไขเวลาเข้าไปในโพสต์นี้
         }
 
         if file_to_send:
@@ -95,7 +166,7 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
 
 
 # ============================================================
-# 🟩 View: ปุ่ม "จองเควสนี้"
+# 🟩 View: ปุ่ม "จองเควสนี้" ในกระดานเควส
 # ============================================================
 class BookingView(discord.ui.View):
     def __init__(self):
@@ -151,12 +222,13 @@ class QuestBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
+        # ลงทะเบียนปุ่มให้ทำงานได้ตลอดแม้บอทรีสตาร์ท
         self.add_view(BookingView())
-        
+        self.add_view(EditTimeView())  # ✅ ลงทะเบียนปุ่มแก้ไขเวลา
+
         my_guild = discord.Object(id=SERVER_ID)
         self.tree.copy_global_to(guild=my_guild)
-        # ไม่ต้อง sync อัตโนมัติทุกครั้งที่เปิด ป้องกันโดน Rate limit แนะนำให้พิมพ์ !sync เองเมื่อแก้คำสั่ง
-        # await self.tree.sync(guild=my_guild)
+        # ไม่ต้อง sync อัตโนมัติ ป้องกันโดนแบน API ให้พิมพ์ !sync เอาเอง
 
     async def on_ready(self):
         print(f"✅ ล็อกอินแล้วในชื่อ {self.user} (ID: {self.user.id})")
