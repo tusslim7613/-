@@ -10,21 +10,19 @@ from MyServer import server_on  # ✅ นำเข้าฟังก์ชัน
 load_dotenv()
 
 # ============================================================
-# ⚙️ ส่วนตั้งค่า
+# ⚙️ ส่วนตั้งค่า (⚠️ ถ้าย้ายเซิร์ฟเวอร์ ต้องแก้ ID พวกนี้ใหม่ทั้งหมด!)
 # ============================================================
-SERVER_ID = 1150959373062000710  # 👈 ID เซิร์ฟเวอร์ของคุณ
-
-# 1. ใส่ ID ห้อง "กระดานเควส" ที่แยกตามเลเวล/Tier
+# 1. ใส่ ID ห้อง "กระดานเควส" ของเซิร์ฟเวอร์ใหม่
 QUEST_BOARD_TIER_1 = 1442689482401779864
 QUEST_BOARD_TIER_2 = 1442705819455197335
 QUEST_BOARD_TIER_3 = 1442711022434521220
 QUEST_BOARD_TIER_4 = 1442714869966311535
 
-# 2. ใส่ ID ห้อง "ห้อง Join เควส" (ที่เดียวรวมทุกระดับเลเวล)
+# 2. ใส่ ID ห้อง "ห้อง Join เควส" ของเซิร์ฟเวอร์ใหม่
 QUEST_JOIN_FORUM_ID = 1387274730330914907
 
-# ✅ เปลี่ยนมาใช้ Role ID แทนชื่อ เพื่อความแม่นยำ 100%
-DM_ROLE_ID = 1409961278981804195  # 👈 ใส่ ID ของยศ Tool (คลิกขวาที่ยศในดิสคอร์ดแล้ว Copy ID มาวาง)
+# 3. ใส่ Role ID ของคนคุมเควสในเซิร์ฟเวอร์ใหม่
+DM_ROLE_ID = 123456789012345678  # 👈 เปลี่ยนเป็น Role ID ของเซิร์ฟใหม่
 
 
 # ============================================================
@@ -45,7 +43,6 @@ class EditTimeModal(discord.ui.Modal, title="เลื่อน / แก้ไ�
         message = interaction.message
         thread = interaction.channel
 
-        # 1. แก้ไขข้อความในโพสต์ (หาบรรทัดเก่าแล้วแทนที่ด้วยเวลาใหม่)
         old_content = message.content
         lines = old_content.split('\n')
         new_lines = []
@@ -56,9 +53,7 @@ class EditTimeModal(discord.ui.Modal, title="เลื่อน / แก้ไ�
                 new_lines.append(line)
         new_content = '\n'.join(new_lines)
 
-        # 2. แก้ไขชื่อ Thread (หัวกระทู้)
         old_thread_name = thread.name
-        # ตัดเวลาเก่าที่อยู่ในวงเล็บ [...] ออก แล้วเอาเวลาใหม่ใส่เข้าไป
         if "] " in old_thread_name:
             suffix = old_thread_name.split("] ", 1)[1]
         else:
@@ -67,7 +62,6 @@ class EditTimeModal(discord.ui.Modal, title="เลื่อน / แก้ไ�
         new_thread_name = f"[{self.new_schedule.value}] {suffix}"[:100]
 
         try:
-            # อัปเดตทั้งชื่อกระทู้ และ ข้อความ
             await thread.edit(name=new_thread_name)
             await message.edit(content=new_content)
             await interaction.followup.send("✅ แก้ไขเวลานัดหมายเรียบร้อยแล้ว!", ephemeral=True)
@@ -85,7 +79,6 @@ class EditTimeView(discord.ui.View):
         custom_id="quest:edit_time"
     )
     async def edit_time_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # ✅ เช็คสิทธิ์: ให้แก้ได้เฉพาะ "ผู้จองเควส" หรือ "DM (ตรวจจาก ID)" เท่านั้น
         is_owner = str(interaction.user.id) in interaction.message.content
         is_dm = any(role.id == DM_ROLE_ID for role in interaction.user.roles)
 
@@ -93,7 +86,6 @@ class EditTimeView(discord.ui.View):
             await interaction.response.send_message("❌ คุณไม่ใช่ผู้จองเควสนี้ หรือไม่ใช่ DM ไม่สามารถแก้ไขเวลาได้ครับ", ephemeral=True)
             return
 
-        # เปิดหน้าต่างให้กรอกเวลาใหม่
         await interaction.response.send_modal(EditTimeModal())
 
 
@@ -150,14 +142,13 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
             except Exception:
                 content += f"\n\n{self.image_url}"
 
-        # นำเวลาไปใส่ไว้หน้าสุดของชื่อกระทู้
         thread_name = f"[{self.schedule.value}] {self.quest_title} - {interaction.user.display_name}"[:100]
 
         kwargs = {
             "name": thread_name,
             "content": content,
             "allowed_mentions": discord.AllowedMentions(users=[interaction.user]),
-            "view": EditTimeView()  # ✅ เพิ่มปุ่มแก้ไขเวลาเข้าไปในโพสต์นี้
+            "view": EditTimeView() 
         }
 
         if file_to_send:
@@ -224,31 +215,28 @@ class QuestBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # ลงทะเบียนปุ่มให้ทำงานได้ตลอดแม้บอทรีสตาร์ท
         self.add_view(BookingView())
         self.add_view(EditTimeView())
 
-        my_guild = discord.Object(id=SERVER_ID)
-        self.tree.copy_global_to(guild=my_guild)
-
     async def on_ready(self):
         print(f"✅ ล็อกอินแล้วในชื่อ {self.user} (ID: {self.user.id})")
-        print(f"✅ ซิงค์ข้อมูลคำสั่งสำเร็จ! ลองไปพิมพ์ /create_quest ในดิสคอร์ดดูได้เลย")
+        print(f"✅ พร้อมใช้งาน! หากย้ายเซิร์ฟเวอร์ ให้พิมพ์ !sync ในดิสคอร์ดเซิร์ฟเวอร์นั้นๆ")
 
 
 bot = QuestBot()
 
 
 # ============================================================
-# 🔧 คำสั่งพิเศษสำหรับ Admin (ใช้ซิงค์ Slash Command)
+# 🔧 คำสั่งพิเศษสำหรับ Admin (ใช้ซิงค์ Slash Command ให้ตรงกับเซิร์ฟนั้นๆ)
 # ============================================================
 @bot.command()
 @commands.is_owner()
 async def sync(ctx):
     try:
-        my_guild = discord.Object(id=SERVER_ID)
-        synced = await bot.tree.sync(guild=my_guild)
-        await ctx.send(f"🔄 ซิงค์ Slash Commands สำเร็จจำนวน {len(synced)} คำสั่ง")
+        # ✅ เปลี่ยนมาดึง ID เซิร์ฟเวอร์จากห้องที่พิมพ์คำสั่งอัตโนมัติ
+        bot.tree.copy_global_to(guild=ctx.guild)
+        synced = await bot.tree.sync(guild=ctx.guild)
+        await ctx.send(f"🔄 ซิงค์ Slash Commands ลงเซิร์ฟเวอร์ '{ctx.guild.name}' สำเร็จจำนวน {len(synced)} คำสั่ง")
     except Exception as e:
         await ctx.send(f"❌ เกิดข้อผิดพลาดในการซิงค์: {e}")
 
@@ -274,7 +262,6 @@ async def sync(ctx):
     app_commands.Choice(name="กระดาน Tier 4 (Lv 17-20)", value=str(QUEST_BOARD_TIER_4)),
 ])
 @app_commands.guild_only()
-# ✅ อัปเดตตัวเช็กสิทธิ์ ให้ใช้ Role ID ในการเช็กแทนชื่อ
 @app_commands.checks.has_role(DM_ROLE_ID)
 async def create_quest(
         interaction: discord.Interaction,
@@ -341,7 +328,6 @@ async def create_quest(
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingRole):
-        # ✅ เปลี่ยนข้อความแจ้งเตือนให้ใช้ Tag รูปแบบ ID จะได้ Mention ยศในห้องแชทได้ถูกต้อง
         msg = f"⛔ คำสั่งนี้ใช้ได้เฉพาะผู้ที่มี Role <@&{DM_ROLE_ID}> เท่านั้น"
     else:
         msg = "❌ เกิดข้อผิดพลาดบางอย่าง กรุณาลองใหม่อีกครั้ง"
@@ -356,7 +342,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if token:
-        server_on()  # รันเซิร์ฟเวอร์เพื่อให้เว็บ uptime ตรวจจับได้
+        server_on()  
         bot.run(token)
     else:
         print("❌ ไม่พบ DISCORD_TOKEN ในไฟล์ .env")
