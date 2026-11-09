@@ -5,22 +5,22 @@ from discord.ext import commands
 from dotenv import load_dotenv
 import io
 import aiohttp
-from MyServer import server_on  # ✅ นำเข้าฟังก์ชันเปิดเซิร์ฟเวอร์จาก MyServer.py
+from MyServer import server_on  # ✅ นำเข้าฟังก์ชันเปิดเซิร์ฟเวอร์
 
 load_dotenv()
 
 # ============================================================
 # ⚙️ ส่วนตั้งค่า
 # ============================================================
-SERVER_ID = 806041410607775745  # 👈 ใส่ ID ของ "เซิร์ฟเวอร์ดิสคอร์ด" คุณที่นี่
+SERVER_ID = 806041410607775745  # 👈 ID เซิร์ฟเวอร์ของคุณ
 
-# 👈 1. ใส่ ID ห้อง "กระดานเควส" ที่แยกตามเลเวล/Tier
+# 1. ใส่ ID ห้อง "กระดานเควส" ที่แยกตามเลเวล/Tier
 QUEST_BOARD_TIER_1 = 1569061816619896862
 QUEST_BOARD_TIER_2 = 1569234984320114850
 QUEST_BOARD_TIER_3 = 1569235058022424637
 QUEST_BOARD_TIER_4 = 1569235104662945884
 
-# 👈 2. ใส่ ID ห้อง "ห้อง Join เควส" (ที่เดียวรวมทุกระดับเลเวล)
+# 2. ใส่ ID ห้อง "ห้อง Join เควส" (ที่เดียวรวมทุกระดับเลเวล)
 QUEST_JOIN_FORUM_ID = 1569061876711694447
 DM_ROLE_NAME = "DM"  # ชื่อ Role ของ DM
 
@@ -31,10 +31,10 @@ DM_ROLE_NAME = "DM"  # ชื่อ Role ของ DM
 class BookingModal(discord.ui.Modal, title="จองเควส"):
     schedule = discord.ui.TextInput(
         label="ระบุวันและเวลาที่คุณสะดวกเล่น",
-        placeholder="เช่น [01/12/26 20.00] ",
+        placeholder="เช่น 01/12/26 20.00",
         style=discord.TextStyle.short,
         required=True,
-        max_length=100,
+        max_length=50, # จำกัดความยาวนิดหน่อยเพื่อไม่ให้ชื่อหัวโพสต์ล้น
     )
 
     def __init__(self, quest_title: str, quest_description: str, recommended_level: str, image_url: str = None):
@@ -78,7 +78,8 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
             except Exception:
                 content += f"\n\n{self.image_url}"
 
-        thread_name = f"{self.quest_title} - {interaction.user.display_name}"[:100]
+        # ✅ แก้ไขตรงนี้: เอาวันเวลา (self.schedule.value) ขึ้นไปไว้หน้าสุดของชื่อ Thread
+        thread_name = f"[{self.schedule.value}] {self.quest_title} - {interaction.user.display_name}"[:100]
 
         kwargs = {
             "name": thread_name,
@@ -151,15 +152,15 @@ class QuestBot(commands.Bot):
 
     async def setup_hook(self):
         self.add_view(BookingView())
-
+        
         my_guild = discord.Object(id=SERVER_ID)
         self.tree.copy_global_to(guild=my_guild)
-        # ✅ คอมเมนต์บรรทัดนี้ไว้เพื่อป้องกันการโดน Rate Limit เวลาบอทรีสตาร์ทรัวๆ
+        # ไม่ต้อง sync อัตโนมัติทุกครั้งที่เปิด ป้องกันโดน Rate limit แนะนำให้พิมพ์ !sync เองเมื่อแก้คำสั่ง
         # await self.tree.sync(guild=my_guild)
 
     async def on_ready(self):
         print(f"✅ ล็อกอินแล้วในชื่อ {self.user} (ID: {self.user.id})")
-        print(f"✅ ใช้คำสั่ง !sync ในดิสคอร์ดเพื่ออัปเดตคำสั่งได้เลย")
+        print(f"✅ ซิงค์ข้อมูลคำสั่งสำเร็จ! ลองไปพิมพ์ /create_quest ในดิสคอร์ดดูได้เลย")
 
 
 bot = QuestBot()
@@ -206,7 +207,7 @@ async def create_quest(
         quest_board: app_commands.Choice[str],
         title: app_commands.Range[str, 1, 90],
         dm_name: app_commands.Range[str, 1, 100],
-        description: app_commands.Range[str, 1, 1500],  # ✅ ลดเหลือ 1500 ตัวอักษร กัน Error Discord
+        description: app_commands.Range[str, 1, 1500],
         max_players: app_commands.Range[int, 1, 20],
         recommended_level: app_commands.Range[str, 1, 20],
         image_file: discord.Attachment = None,
@@ -280,7 +281,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if token:
-        server_on()  # ✅ สั่งรันเว็บเซิร์ฟเวอร์ก่อนสตาร์ทบอท
+        server_on()  # รันเซิร์ฟเวอร์เพื่อให้เว็บ uptime ตรวจจับได้
         bot.run(token)
     else:
         print("❌ ไม่พบ DISCORD_TOKEN ในไฟล์ .env")
