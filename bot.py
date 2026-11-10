@@ -350,6 +350,29 @@ async def sync(ctx):
 
 
 # ============================================================
+# 🧹 คำสั่งพิเศษ: ล้าง Slash Command ทั้งหมดแล้วซิงค์ใหม่ (แก้ CommandSignatureMismatch)
+# ============================================================
+@bot.command()
+@commands.is_owner()
+async def clear_sync(ctx):
+    """ใช้เมื่อขึ้น error 'CommandSignatureMismatch' — ล้างคำสั่งเก่าทั้งหมดแล้วลงทะเบียนใหม่"""
+    try:
+        await ctx.send("🧹 กำลังล้าง Slash Command เก่าทั้งหมด...")
+        # ล้างทุกคำสั่งใน guild นี้ (ใน memory) แล้ว sync เพื่อลบออกจาก Discord จริง
+        bot.tree.clear_commands(guild=ctx.guild)
+        await bot.tree.sync(guild=ctx.guild)
+        # คัดลอก global commands มาแล้ว sync ใหม่
+        bot.tree.copy_global_to(guild=ctx.guild)
+        synced = await bot.tree.sync(guild=ctx.guild)
+        await ctx.send(
+            f"✅ ล้างและซิงค์ใหม่สำเร็จ จำนวน {len(synced)} คำสั่ง\n"
+            f"⏳ รอประมาณ 1-2 นาทีให้ Discord อัปเดต แล้วค่อยลองใช้ Slash Command ใหม่นะครับ"
+        )
+    except Exception as e:
+        await ctx.send(f"❌ เกิดข้อผิดพลาด: {e}")
+
+
+# ============================================================
 # ⚙️ Slash Command: /setup — ตั้งค่าบอทสำหรับเซิร์ฟเวอร์นี้ (ครั้งเดียวต่อเซิร์ฟเวอร์)
 # ============================================================
 @bot.tree.command(name="setup", description="ตั้งค่าบอท Quest สำหรับเซิร์ฟเวอร์นี้ (เฉพาะผู้ดูแล)")
