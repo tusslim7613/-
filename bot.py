@@ -150,18 +150,19 @@ class EditTimeModal(discord.ui.Modal, title="เลื่อน / แก้ไ�
                 new_lines.append(line)
         new_content = '\n'.join(new_lines)
 
-        old_thread_name = thread.name
-        if "] " in old_thread_name:
-            suffix = old_thread_name.split("] ", 1)[1]
-        else:
-            suffix = old_thread_name
-
-        new_thread_name = f"[{self.new_schedule.value}] {suffix}"[:100]
+        # 📝 เพิ่ม/อัปเดตบรรทัดประวัติการแก้ไขเวลา (เก็บแค่ครั้งล่าสุด แก้ได้หลายครั้ง)
+        history_line = f"✏️ **แก้ไขเวลาล่าสุด:** {self.new_schedule.value} (โดย {interaction.user.display_name})"
+        hist_lines = new_content.split('\n')
+        hist_lines = [l for l in hist_lines if not l.startswith("✏️ **แก้ไขเวลาล่าสุด:**")]
+        hist_lines.append(history_line)
+        new_content = '\n'.join(hist_lines)
 
         try:
-            await thread.edit(name=new_thread_name)
             await message.edit(content=new_content)
-            await interaction.followup.send("✅ แก้ไขเวลานัดหมายเรียบร้อยแล้ว!", ephemeral=True)
+            await interaction.followup.send(
+                "✅ แก้ไขเวลานัดหมายเรียบร้อยแล้ว!\n💡 สามารถแก้ไขได้อีกครั้งได้ตลอดเลยครับ",
+                ephemeral=True
+            )
         except Exception as e:
             await interaction.followup.send(f"❌ เกิดข้อผิดพลาดในการอัปเดต: {e}", ephemeral=True)
 
@@ -199,6 +200,64 @@ class EditTimeView(discord.ui.View):
             return
 
         await interaction.response.send_modal(EditTimeModal())
+
+    @discord.ui.button(
+        label="✅ จบเควสแล้ว",
+        style=discord.ButtonStyle.success,
+        custom_id="quest:end_quest"
+    )
+    async def end_quest_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 🔑 ตรวจสอบสิทธิ์: ใช้ได้เฉพาะคนที่มี DM Role (ยศที่กำหนด) เท่านั้น
+        config = get_guild_config(interaction.guild_id)
+        dm_role_id = config.get("dm_role_id")
+        is_dm = bool(dm_role_id) and any(role.id == int(dm_role_id) for role in interaction.user.roles)
+
+        if not is_dm:
+            await interaction.response.send_message(
+                "❌ ปุ่มนี้ใช้ได้เฉพาะ DM (ผู้ที่มียศที่กำหนด) เท่านั้น",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=False)  # ส่งข้อความแจ้งเป็นสาธารณะให้ทุกคนเห็น
+
+        thread = interaction.channel
+        old_name = thread.name
+
+        # 🏷️ แปะ Tag "✅ จบเควสแล้ว" ให้กับกระทู้นี้ (หาหรือสร้างอัตโนมัติในห้อง Forum)
+        forum = getattr(thread, "parent", None)
+        if isinstance(forum, discord.ForumChannel):
+            complete_tags = await _get_or_create_forum_tags(forum, ["✅ จบเควสแล้ว"])
+            if complete_tags:
+                current_tags = list(getattr(thread, "applied_tags", []) or [])
+                existing_ids = {t.id for t in current_tags}
+                for t in complete_tags:
+                    if t.id not in existing_ids:
+                        current_tags.append(t)
+                try:
+                    await thread.edit(applied_tags=current_tags[:5])
+                except Exception:
+                    pass
+
+        # เพิ่ม prefix [✅ จบแล้ว] ในชื่อกระทู้ ถ้ายังไม่มี
+        if not old_name.startswith("[✅ จบแล้ว]"):
+            new_name = f"[✅ จบแล้ว] {old_name}"[:100]
+            try:
+                await thread.edit(name=new_name)
+            except Exception:
+                pass
+
+        # ส่งข้อความแจ้งในกระทู้
+        await interaction.followup.send(
+            f"✅ **เควสจบเรียบร้อยแล้ว!** ขอบคุณที่ร่วมเล่นครับ 🎉\n(ปุ่มทั้งหมดจะถูกปิดใช้งาน)",
+            ephemeral=False,
+        )
+
+        # 💡 ไม่ปิดปุ่ม — ปุ่มทั้งหมดคงอยู่กดได้ต่อ (ถ้าอนาคตอยากปิด ให้เอาโค้ดด้านล่างกลับมาใช้)
+        # try:
+        #     await interaction.message.edit(view=None)
+        # except Exception:
+        #     pass
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
         await _handle_view_error(interaction, error, item)
@@ -245,7 +304,7 @@ class TagSelectView(discord.ui.View):
         self.selected_tags = []
 
     @discord.ui.select(
-        placeholder="1. ประเภทเควส: One Short / Short Adventure",
+        placeholder="1. ประเภทเควส: One Shot / Short Adventure",
         options=[discord.SelectOption(label=opt, value=opt) for opt in QUEST_TYPE_OPTIONS],
         custom_id="quest:tag_type",
         min_values=1, max_values=1,
@@ -257,7 +316,7 @@ class TagSelectView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
     @discord.ui.select(
-        placeholder="2. Payment: Donation / Commission",
+        placeholder="2. Payment: Donation / Payment",
         options=[discord.SelectOption(label=opt, value=opt) for opt in PAYMENT_OPTIONS],
         custom_id="quest:tag_payment",
         min_values=1, max_values=1,
@@ -269,7 +328,7 @@ class TagSelectView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
     @discord.ui.select(
-        placeholder="3. Level/Tier: Tier 1 / Tier 2 / Tier 3",
+        placeholder="3. Level: Lv. 1-4 / Lv. 5-10 / Lv. 11-16 / Lv. 17-20",
         options=[discord.SelectOption(label=opt, value=opt) for opt in TIER_OPTIONS],
         custom_id="quest:tag_tier",
         min_values=1, max_values=1,
@@ -304,10 +363,10 @@ class TagSelectView(discord.ui.View):
 # ============================================================
 class BookingModal(discord.ui.Modal, title="จองเควส"):
     schedule = discord.ui.TextInput(
-        label="ระบุวันและเวลาที่คุณสะดวกเล่น",
-        placeholder="เช่น [01/12/26 20.00] ",
+        label="วันเวลาที่สะดวก (ไม่บังคับ — ปล่อยว่างได้)",
+        placeholder="เช่น 01/12/26 20.00 (ปล่อยว่างได้ถ้ายังไม่แน่ใจ)",
         style=discord.TextStyle.short,
-        required=True,
+        required=False,
         max_length=50,
     )
 
@@ -342,11 +401,15 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
 
         await interaction.response.defer(ephemeral=True)
 
+        # จัดการเวลา: ถ้าผู้เล่นไม่กรอกก็ไม่บังคับ ใช้ข้อความเริ่มต้น
+        schedule_text = self.schedule.value.strip() if self.schedule.value else ""
+        schedule_display = schedule_text if schedule_text else "⏳ ยังไม่ระบุเวลา (จะแจ้งภายหลัง)"
+
         content = (
             f"📥 **บันทึกการจองเควส:** {self.quest_title}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🙋 **ผู้เล่นที่จอง:** {interaction.user.mention}\n"
-            f"🗓️ **วันเวลาที่สะดวก:** {self.schedule.value}\n"
+            f"🗓️ **วันเวลาที่สะดวก:** {schedule_display}\n"
             f"⚔️ **เลเวลที่แนะนำ:** {self.recommended_level}\n\n"
             f"📜 **รายละเอียดเควส:**\n{self.quest_description}"
         )
@@ -364,7 +427,7 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
             except Exception:
                 content += f"\n\n{self.image_url}"
 
-        thread_name = f"[{self.schedule.value}] {self.quest_title} - {interaction.user.display_name}"[:100]
+        thread_name = f"{self.quest_title} - {interaction.user.display_name}"[:100]
 
         kwargs = {
             "name": thread_name,
