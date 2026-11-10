@@ -1,28 +1,70 @@
 import os
+import json
+import re
+import io
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
-import io
-import aiohttp
-from MyServer import server_on  # ✅ นำเข้าฟังก์ชันเปิดเซิร์ฟเวอร์
+
+# พยายามนำเข้า MyServer (ถ้าไม่มีไฟล์นี้ก็ทำงานได้ตามปกติ)
+try:
+    from MyServer import server_on
+    HAS_MYSERVER = True
+except ImportError:
+    HAS_MYSERVER = False
 
 load_dotenv()
 
 # ============================================================
-# ⚙️ ส่วนตั้งค่า (⚠️ ถ้าย้ายเซิร์ฟเวอร์ ต้องแก้ ID พวกนี้ใหม่ทั้งหมด!)
+# 🗄️ ระบบจัดการการตั้งค่าต่อเซิร์ฟเวอร์ (Multi-Guild Config)
+#    เก็บในไฟล์ guild_configs.json — ไม่ต้องแก้โค้ดอีกต่อไป!
 # ============================================================
-# 1. ใส่ ID ห้อง "กระดานเควส" ของเซิร์ฟเวอร์ใหม่
-QUEST_BOARD_TIER_1 = 1442689482401779864
-QUEST_BOARD_TIER_2 = 1442705819455197335
-QUEST_BOARD_TIER_3 = 1442711022434521220
-QUEST_BOARD_TIER_4 = 1442714869966311535
+CONFIG_FILE = "guild_configs.json"
 
-# 2. ใส่ ID ห้อง "ห้อง Join เควส" ของเซิร์ฟเวอร์ใหม่
-QUEST_JOIN_FORUM_ID = 1387274730330914907
+def load_configs() -> dict:
+    """โหลดการตั้งค่าทั้งหมดจากไฟล์"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return {}
+    return {}
 
-# 3. ใส่ Role ID ของคนคุมเควสในเซิร์ฟเวอร์ใหม่
-DM_ROLE_ID = 123456789012345678  # 👈 เปลี่ยนเป็น Role ID ของเซิร์ฟใหม่
+def save_configs(configs: dict):
+    """บันทึกการตั้งค่าทั้งหมดลงไฟล์"""
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(configs, f, indent=2, ensure_ascii=False)
+
+def get_guild_config(guild_id: int) -> dict:
+    """ดึงการตั้งค่าของเซิร์ฟเวอร์หนึ่งๆ"""
+    return load_configs().get(str(guild_id), {})
+
+def update_guild_config(guild_id: int, **kwargs):
+    """อัปเดตการตั้งค่าของเซิร์ฟเวอร์หนึ่งๆ"""
+    configs = load_configs()
+    gid = str(guild_id)
+    if gid not in configs:
+        configs[gid] = {}
+    configs[gid].update(kwargs)
+    save_configs(configs)
+
+
+# ============================================================
+# 🛡️ Custom Check: ตรวจสอบว่าผู้ใช้มี DM Role ของเซิร์ฟเวอร์นั้นๆ หรือไม่
+# ============================================================
+def is_dm_role():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        config = get_guild_config(interaction.guild_id)
+        dm_role_id = config.get("dm_role_id")
+        if not dm_role_id:
+            raise app_commands.CheckFailure(
+                "เซิร์ฟเวอร์นี้ยังไม่ได้ตั้งค่า DM Role — ให้ผู้ดูแลใช้คำสั่ง /setup ก่อน"
+            )
+        return any(role.id == int(dm_role_id) for role in interaction.user.roles)
+    return app_commands.check(predicate)
 
 
 # ============================================================
@@ -58,7 +100,7 @@ class EditTimeModal(discord.ui.Modal, title="เลื่อน / แก้ไ�
             suffix = old_thread_name.split("] ", 1)[1]
         else:
             suffix = old_thread_name
-        
+
         new_thread_name = f"[{self.new_schedule.value}] {suffix}"[:100]
 
         try:
@@ -72,18 +114,33 @@ class EditTimeModal(discord.ui.Modal, title="เลื่อน / แก้ไ�
 class EditTimeView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-    
+
     @discord.ui.button(
         label="⏳ เลื่อน/แก้ไขเวลา",
         style=discord.ButtonStyle.primary,
         custom_id="quest:edit_time"
     )
     async def edit_time_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        is_owner = str(interaction.user.id) in interaction.message.content
-        is_dm = any(role.id == DM_ROLE_ID for role in interaction.user.roles)
+        # 🔑 ดึง DM Role ID จาก config ของเซิร์ฟเวอร์นี้ (ไม่ใช่ค่าคงที่อีกต่อไป)
+        config = get_guild_config(interaction.guild_id)
+        dm_role_id = config.get("dm_role_id")
+        is_dm = bool(dm_role_id) and any(role.id == int(dm_role_id) for role in interaction.user.roles)
+
+        # 🔍 ตรวจสอบเจ้าของเควสอย่างแม่นยำด้วย regex (หา <@user_id> จากข้อความ)
+        is_owner = False
+        content = interaction.message.content or ""
+        for line in content.split('\n'):
+            if "**ผู้เล่นที่จอง:**" in line:
+                match = re.search(r'<@(\d+)>', line)
+                if match and match.group(1) == str(interaction.user.id):
+                    is_owner = True
+                break
 
         if not (is_owner or is_dm):
-            await interaction.response.send_message("❌ คุณไม่ใช่ผู้จองเควสนี้ หรือไม่ใช่ DM ไม่สามารถแก้ไขเวลาได้ครับ", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ คุณไม่ใช่ผู้จองเควสนี้ หรือไม่ใช่ DM ไม่สามารถแก้ไขเวลาได้ครับ",
+                ephemeral=True
+            )
             return
 
         await interaction.response.send_modal(EditTimeModal())
@@ -109,11 +166,22 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
         self.image_url = image_url
 
     async def on_submit(self, interaction: discord.Interaction):
-        join_forum = interaction.client.get_channel(QUEST_JOIN_FORUM_ID)
+        # 🔑 ดึงห้อง Join เควสจาก config ของเซิร์ฟเวอร์นี้
+        config = get_guild_config(interaction.guild_id)
+        join_forum_id = config.get("quest_join_forum_id")
+
+        if not join_forum_id:
+            await interaction.response.send_message(
+                "❌ เซิร์ฟเวอร์นี้ยังไม่ได้ตั้งค่าห้อง Join เควส — ให้ผู้ดูแลใช้คำสั่ง /setup ก่อน",
+                ephemeral=True,
+            )
+            return
+
+        join_forum = interaction.client.get_channel(int(join_forum_id))
 
         if not isinstance(join_forum, discord.ForumChannel):
             await interaction.response.send_message(
-                "❌ ไม่พบห้อง Join เควส กรุณาแจ้งผู้ดูแลเซิร์ฟเวอร์ให้ตรวจสอบ ID ห้อง",
+                "❌ ห้อง Join เควสที่ตั้งค่าไว้ไม่ถูกต้อง (ต้องเป็น Forum Channel) — ให้ผู้ดูแลใช้ /setup ตั้งค่าใหม่",
                 ephemeral=True,
             )
             return
@@ -148,7 +216,7 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
             "name": thread_name,
             "content": content,
             "allowed_mentions": discord.AllowedMentions(users=[interaction.user]),
-            "view": EditTimeView() 
+            "view": EditTimeView()
         }
 
         if file_to_send:
@@ -220,20 +288,20 @@ class QuestBot(commands.Bot):
 
     async def on_ready(self):
         print(f"✅ ล็อกอินแล้วในชื่อ {self.user} (ID: {self.user.id})")
-        print(f"✅ พร้อมใช้งาน! หากย้ายเซิร์ฟเวอร์ ให้พิมพ์ !sync ในดิสคอร์ดเซิร์ฟเวอร์นั้นๆ")
+        print(f"✅ รองรับหลายเซิร์ฟเวอร์! ในแต่ละเซิร์ฟเวอร์ ให้ Admin ใช้ /setup ตั้งค่า แล้วพิมพ์ !sync")
+        print(f"📋 จำนวนเซิร์ฟเวอร์ที่บอทเข้าร่วม: {len(self.guilds)}")
 
 
 bot = QuestBot()
 
 
 # ============================================================
-# 🔧 คำสั่งพิเศษสำหรับ Admin (ใช้ซิงค์ Slash Command ให้ตรงกับเซิร์ฟนั้นๆ)
+# 🔧 คำสั่งพิเศษสำหรับ Owner (ซิงค์ Slash Command ลงแต่ละเซิร์ฟเวอร์)
 # ============================================================
 @bot.command()
 @commands.is_owner()
 async def sync(ctx):
     try:
-        # ✅ เปลี่ยนมาดึง ID เซิร์ฟเวอร์จากห้องที่พิมพ์คำสั่งอัตโนมัติ
         bot.tree.copy_global_to(guild=ctx.guild)
         synced = await bot.tree.sync(guild=ctx.guild)
         await ctx.send(f"🔄 ซิงค์ Slash Commands ลงเซิร์ฟเวอร์ '{ctx.guild.name}' สำเร็จจำนวน {len(synced)} คำสั่ง")
@@ -242,11 +310,67 @@ async def sync(ctx):
 
 
 # ============================================================
+# ⚙️ Slash Command: /setup — ตั้งค่าบอทสำหรับเซิร์ฟเวอร์นี้ (ครั้งเดียวต่อเซิร์ฟเวอร์)
+# ============================================================
+@bot.tree.command(name="setup", description="ตั้งค่าบอท Quest สำหรับเซิร์ฟเวอร์นี้ (เฉพาะผู้ดูแล)")
+@app_commands.describe(
+    quest_join_forum="เลือกห้อง Forum ที่ใช้เป็น 'ห้อง Join เควส'",
+    dm_role="เลือก Role ที่เป็นคนคุมเควส (DM)",
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def setup(
+    interaction: discord.Interaction,
+    quest_join_forum: discord.ForumChannel,
+    dm_role: discord.Role,
+):
+    update_guild_config(
+        interaction.guild_id,
+        quest_join_forum_id=quest_join_forum.id,
+        dm_role_id=dm_role.id,
+    )
+    await interaction.response.send_message(
+        f"✅ ตั้งค่าเซิร์ฟเวอร์เรียบร้อยแล้ว!\n\n"
+        f"📌 **ห้อง Join เควส:** {quest_join_forum.mention}\n"
+        f"👑 **DM Role:** {dm_role.mention}\n\n"
+        f"ตอนนี้สามารถใช้ /create_quest และระบบจองเควสได้แล้วครับ",
+        ephemeral=True,
+    )
+
+
+# ============================================================
+# 📋 Slash Command: /show_config — แสดงการตั้งค่าปัจจุบัน
+# ============================================================
+@bot.tree.command(name="show_config", description="แสดงการตั้งค่าบอทของเซิร์ฟเวอร์นี้ (เฉพาะผู้ดูแล)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def show_config(interaction: discord.Interaction):
+    config = get_guild_config(interaction.guild_id)
+    if not config:
+        await interaction.response.send_message(
+            "⚠️ เซิร์ฟเวอร์นี้ยังไม่ได้ตั้งค่า — ให้ใช้คำสั่ง /setup ก่อน",
+            ephemeral=True,
+        )
+        return
+
+    join_forum_id = config.get("quest_join_forum_id")
+    dm_role_id = config.get("dm_role_id")
+
+    join_forum = interaction.client.get_channel(int(join_forum_id)) if join_forum_id else None
+    dm_role = interaction.guild.get_role(int(dm_role_id)) if dm_role_id else None
+
+    lines = ["📋 **การตั้งค่าปัจจุบันของเซิร์ฟเวอร์นี้:**\n"]
+    lines.append(f"📌 ห้อง Join เควส: {join_forum.mention if join_forum else '❌ ไม่พบห้อง (ตั้งค่าใหม่ด้วย /setup)'}")
+    lines.append(f"👑 DM Role: {dm_role.mention if dm_role else '❌ ไม่พบ Role (ตั้งค่าใหม่ด้วย /setup)'}")
+
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+# ============================================================
 # 🧙 Slash Command: /create_quest
+#    🔑 quest_board เป็นการเลือกห้อง Forum โดยตรงจาก dropdown — ใช้ได้ทุกเซิร์ฟเวอร์ทันที!
 # ============================================================
 @bot.tree.command(name="create_quest", description="สร้างเควสใหม่บนกระดานเควสพร้อมรูปภาพ (เฉพาะ DM)")
 @app_commands.describe(
-    quest_board="เลือกห้องกระดานเควสตาม Tier",
+    quest_board="เลือกห้อง Forum กระดานเควสที่ต้องการลง (เช่น Tier 1, Tier 2 ฯลฯ)",
     title="ชื่อเควส",
     dm_name="ชื่อ DM ที่คุมเควสนี้ (พิมพ์ชื่อเองได้เลย)",
     description="คำอธิบายเควส",
@@ -255,17 +379,11 @@ async def sync(ctx):
     image_file="อัปโหลดรูปภาพโดยตรง (ลากรูปใส่ช่องนี้)",
     image_url="หรือ วางลิงก์รูปภาพเว็บนอก (เช่น https://...)"
 )
-@app_commands.choices(quest_board=[
-    app_commands.Choice(name="กระดาน Tier 1 (Lv 1-4)", value=str(QUEST_BOARD_TIER_1)),
-    app_commands.Choice(name="กระดาน Tier 2 (Lv 5-10)", value=str(QUEST_BOARD_TIER_2)),
-    app_commands.Choice(name="กระดาน Tier 3 (Lv 11-16)", value=str(QUEST_BOARD_TIER_3)),
-    app_commands.Choice(name="กระดาน Tier 4 (Lv 17-20)", value=str(QUEST_BOARD_TIER_4)),
-])
 @app_commands.guild_only()
-@app_commands.checks.has_role(DM_ROLE_ID)
+@is_dm_role()
 async def create_quest(
         interaction: discord.Interaction,
-        quest_board: app_commands.Choice[str],
+        quest_board: discord.ForumChannel,
         title: app_commands.Range[str, 1, 90],
         dm_name: app_commands.Range[str, 1, 100],
         description: app_commands.Range[str, 1, 1500],
@@ -274,14 +392,8 @@ async def create_quest(
         image_file: discord.Attachment = None,
         image_url: str = None
 ):
-    board_forum = interaction.client.get_channel(int(quest_board.value))
-
-    if not isinstance(board_forum, discord.ForumChannel):
-        await interaction.response.send_message(
-            f"❌ ไม่พบห้อง {quest_board.name} กรุณาตรวจสอบ ID ห้องในโค้ดตั้งค่า",
-            ephemeral=True,
-        )
-        return
+    # quest_board เป็น ForumChannel object โดยตรง — ไม่ต้อง get_channel ด้วย ID อีกต่อไป
+    board_forum = quest_board
 
     await interaction.response.defer(ephemeral=True)
 
@@ -322,13 +434,20 @@ async def create_quest(
         kwargs["file"] = file_to_send
 
     await board_forum.create_thread(**kwargs)
-    await interaction.followup.send(f"✅ สร้างเควสบน {quest_board.name} เรียบร้อยแล้ว", ephemeral=True)
+    await interaction.followup.send(f"✅ สร้างเควสในห้อง {board_forum.mention} เรียบร้อยแล้ว", ephemeral=True)
 
 
+# ============================================================
+# 🚨 Error Handler สำหรับ Slash Command
+# ============================================================
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingRole):
-        msg = f"⛔ คำสั่งนี้ใช้ได้เฉพาะผู้ที่มี Role <@&{DM_ROLE_ID}> เท่านั้น"
+        msg = "⛔ คุณไม่มีสิทธิ์ใช้คำสั่งนี้"
+    elif isinstance(error, app_commands.MissingPermissions):
+        msg = "⛔ คำสั่งนี้ใช้ได้เฉพาะผู้ดูแลเซิร์ฟเวอร์ (มีสิทธิ์ Manage Server) เท่านั้น"
+    elif isinstance(error, app_commands.CheckFailure):
+        msg = f"⛔ {error}"
     else:
         msg = "❌ เกิดข้อผิดพลาดบางอย่าง กรุณาลองใหม่อีกครั้ง"
         print(f"[Error] {error!r}")
@@ -339,10 +458,14 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message(msg, ephemeral=True)
 
 
+# ============================================================
+# 🚀 เริ่มรันบอท
+# ============================================================
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if token:
-        server_on()  
+        if HAS_MYSERVER:
+            server_on()
         bot.run(token)
     else:
         print("❌ ไม่พบ DISCORD_TOKEN ในไฟล์ .env")
