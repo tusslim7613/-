@@ -87,6 +87,27 @@ async def _handle_view_error(interaction: discord.Interaction, error: Exception,
 
 
 # ============================================================
+# 🏷️ Helper: เลือก Tag อัตโนมัติสำหรับ Forum Channel ที่บังคับใส่ Tag
+# ============================================================
+def _pick_forum_tags(forum_channel: discord.ForumChannel) -> list:
+    """ถ้าห้อง Forum ต้องการ tag ตอนสร้างกระทู้ ให้เลือก tag ที่เหมาะสมอัตโนมัติ"""
+    tags = forum_channel.available_tags
+    if not tags:
+        return []
+    # เลือก tag ที่ไม่ต้องมีสิทธิ์พิเศษก่อน (ไม่ใช่ moderated tag)
+    unmoderated = [t for t in tags if not getattr(t, "moderated", False)]
+    pool = unmoderated if unmoderated else tags
+    # ลองหา tag ที่ชื่อคล้ายกับเควส/ทั่วไปก่อน
+    preferred_keywords = ["เควส", "quest", "ทั่วไป", "general", "อื่นๆ", "other", "dm", "จอง", "ปกติ"]
+    for keyword in preferred_keywords:
+        for tag in pool:
+            if keyword.lower() in tag.name.lower():
+                return [tag]
+    # ถ้าไม่มี tag ที่ตรงก็เลือก tag แรกในรายการ
+    return [pool[0]]
+
+
+# ============================================================
 # 🛡️ Custom Check: ตรวจสอบว่าผู้ใช้มี DM Role ของเซิร์ฟเวอร์นั้นๆ หรือไม่
 # ============================================================
 def is_dm_role():
@@ -255,6 +276,11 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
             "allowed_mentions": discord.AllowedMentions(users=[interaction.user]),
             "view": EditTimeView()
         }
+
+        # 🏷️ เพิ่ม tag อัตโนมัติถ้าห้อง Forum บังคับใส่ tag
+        applied_tags = _pick_forum_tags(join_forum)
+        if applied_tags:
+            kwargs["applied_tags"] = applied_tags
 
         if file_to_send:
             kwargs["file"] = file_to_send
@@ -492,6 +518,11 @@ async def create_quest(
         "content": content,
         "view": BookingView()
     }
+
+    # 🏷️ เพิ่ม tag อัตโนมัติถ้าห้อง Forum บังคับใส่ tag
+    applied_tags = _pick_forum_tags(board_forum)
+    if applied_tags:
+        kwargs["applied_tags"] = applied_tags
 
     if file_to_send:
         kwargs["file"] = file_to_send
