@@ -19,13 +19,19 @@ except ImportError:
 load_dotenv()
 
 # ============================================================
+# ⚙️ ส่วนตั้งค่า Role พิเศษเพิ่มเติม
+# ============================================================
+# หากต้องการให้ Role อื่นกดปุ่ม "✅ จบเควสแล้ว" ได้ด้วย ให้เอา ID Role มาใส่ในวงเล็บนี้ (คั่นด้วยลูกน้ำ)
+# เช่น [112233445566, 998877665544]
+EXTRA_END_QUEST_ROLES = []
+
+
+# ============================================================
 # 🗄️ ระบบจัดการการตั้งค่าต่อเซิร์ฟเวอร์ (Multi-Guild Config)
-#    เก็บในไฟล์ guild_configs.json — ไม่ต้องแก้โค้ดอีกต่อไป!
 # ============================================================
 CONFIG_FILE = "guild_configs.json"
 
 def load_configs() -> dict:
-    """โหลดการตั้งค่าทั้งหมดจากไฟล์"""
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -35,16 +41,13 @@ def load_configs() -> dict:
     return {}
 
 def save_configs(configs: dict):
-    """บันทึกการตั้งค่าทั้งหมดลงไฟล์"""
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(configs, f, indent=2, ensure_ascii=False)
 
 def get_guild_config(guild_id: int) -> dict:
-    """ดึงการตั้งค่าของเซิร์ฟเวอร์หนึ่งๆ"""
     return load_configs().get(str(guild_id), {})
 
 def update_guild_config(guild_id: int, **kwargs):
-    """อัปเดตการตั้งค่าของเซิร์ฟเวอร์หนึ่งๆ"""
     configs = load_configs()
     gid = str(guild_id)
     if gid not in configs:
@@ -54,7 +57,7 @@ def update_guild_config(guild_id: int, **kwargs):
 
 
 # ============================================================
-# 🚨 Helper: จัดการ error ที่เกิดจากปุ่ม (View) — แสดงรายละเอียดให้ชัดเจน
+# 🚨 Helper: จัดการ error ที่เกิดจากปุ่ม (View)
 # ============================================================
 async def _handle_view_error(interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
     print(f"[View Error] item={getattr(item, 'custom_id', '?')}: {type(error).__name__}: {error!r}")
@@ -87,201 +90,24 @@ async def _handle_view_error(interaction: discord.Interaction, error: Exception,
 
 
 # ============================================================
-# 🏷️ Helper: เลือก Tag อัตโนมัติสำหรับ Forum Channel ที่บังคับใส่ Tag
+# 🏷️ Helper: จัดการระบบ Tag
 # ============================================================
 def _pick_forum_tags(forum_channel: discord.ForumChannel) -> list:
     """ถ้าห้อง Forum ต้องการ tag ตอนสร้างกระทู้ ให้เลือก tag ที่เหมาะสมอัตโนมัติ"""
     tags = forum_channel.available_tags
     if not tags:
         return []
-    # เลือก tag ที่ไม่ต้องมีสิทธิ์พิเศษก่อน (ไม่ใช่ moderated tag)
     unmoderated = [t for t in tags if not getattr(t, "moderated", False)]
     pool = unmoderated if unmoderated else tags
-    # ลองหา tag ที่ชื่อคล้ายกับเควส/ทั่วไปก่อน
     preferred_keywords = ["เควส", "quest", "ทั่วไป", "general", "อื่นๆ", "other", "dm", "จอง", "ปกติ"]
     for keyword in preferred_keywords:
         for tag in pool:
             if keyword.lower() in tag.name.lower():
                 return [tag]
-    # ถ้าไม่มี tag ที่ตรงก็เลือก tag แรกในรายการ
     return [pool[0]]
 
-
-# ============================================================
-# 🛡️ Custom Check: ตรวจสอบว่าผู้ใช้มี DM Role ของเซิร์ฟเวอร์นั้นๆ หรือไม่
-# ============================================================
-def is_dm_role():
-    async def predicate(interaction: discord.Interaction) -> bool:
-        config = get_guild_config(interaction.guild_id)
-        dm_role_id = config.get("dm_role_id")
-        if not dm_role_id:
-            raise app_commands.CheckFailure(
-                "เซิร์ฟเวอร์นี้ยังไม่ได้ตั้งค่า DM Role — ให้ผู้ดูแลใช้คำสั่ง /setup ก่อน"
-            )
-        return any(role.id == int(dm_role_id) for role in interaction.user.roles)
-    return app_commands.check(predicate)
-
-
-# ============================================================
-# 🛠️ Modal & View สำหรับการ "แก้ไขเวลา" ในห้อง Join เควส
-# ============================================================
-class EditTimeModal(discord.ui.Modal, title="เลื่อน / แก้ไขเวลา"):
-    new_schedule = discord.ui.TextInput(
-        label="ระบุวันและเวลาใหม่",
-        placeholder="เช่น 02/12/26 21.00",
-        style=discord.TextStyle.short,
-        required=True,
-        max_length=50,
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-
-        message = interaction.message
-        thread = interaction.channel
-
-        old_content = message.content
-        lines = old_content.split('\n')
-        new_lines = []
-        for line in lines:
-            if line.startswith("🗓️ **วันเวลาที่สะดวก:**"):
-                new_lines.append(f"🗓️ **วันเวลาที่สะดวก:** {self.new_schedule.value}")
-            else:
-                new_lines.append(line)
-        new_content = '\n'.join(new_lines)
-
-        # 📝 เพิ่ม/อัปเดตบรรทัดประวัติการแก้ไขเวลา (เก็บแค่ครั้งล่าสุด แก้ได้หลายครั้ง)
-        history_line = f"✏️ **แก้ไขเวลาล่าสุด:** {self.new_schedule.value} (โดย {interaction.user.display_name})"
-        hist_lines = new_content.split('\n')
-        hist_lines = [l for l in hist_lines if not l.startswith("✏️ **แก้ไขเวลาล่าสุด:**")]
-        hist_lines.append(history_line)
-        new_content = '\n'.join(hist_lines)
-
-        try:
-            await message.edit(content=new_content)
-            await interaction.followup.send(
-                "✅ แก้ไขเวลานัดหมายเรียบร้อยแล้ว!\n💡 สามารถแก้ไขได้อีกครั้งได้ตลอดเลยครับ",
-                ephemeral=True
-            )
-        except Exception as e:
-            await interaction.followup.send(f"❌ เกิดข้อผิดพลาดในการอัปเดต: {e}", ephemeral=True)
-
-
-class EditTimeView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="⏳ เลื่อน/แก้ไขเวลา",
-        style=discord.ButtonStyle.primary,
-        custom_id="quest:edit_time"
-    )
-    async def edit_time_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 🔑 ดึง DM Role ID จาก config ของเซิร์ฟเวอร์นี้ (ไม่ใช่ค่าคงที่อีกต่อไป)
-        config = get_guild_config(interaction.guild_id)
-        dm_role_id = config.get("dm_role_id")
-        is_dm = bool(dm_role_id) and any(role.id == int(dm_role_id) for role in interaction.user.roles)
-
-        # 🔍 ตรวจสอบเจ้าของเควสอย่างแม่นยำด้วย regex (หา <@user_id> จากข้อความ)
-        is_owner = False
-        content = interaction.message.content or ""
-        for line in content.split('\n'):
-            if "**ผู้เล่นที่จอง:**" in line:
-                match = re.search(r'<@(\d+)>', line)
-                if match and match.group(1) == str(interaction.user.id):
-                    is_owner = True
-                break
-
-        if not (is_owner or is_dm):
-            await interaction.response.send_message(
-                "❌ คุณไม่ใช่ผู้จองเควสนี้ หรือไม่ใช่ DM ไม่สามารถแก้ไขเวลาได้ครับ",
-                ephemeral=True
-            )
-            return
-
-        await interaction.response.send_modal(EditTimeModal())
-
-    @discord.ui.button(
-        label="✅ จบเควสแล้ว",
-        style=discord.ButtonStyle.success,
-        custom_id="quest:end_quest"
-    )
-    async def end_quest_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 🔑 ตรวจสอบสิทธิ์: ใช้ได้เฉพาะคนที่มี DM Role (ยศที่กำหนด) เท่านั้น
-        config = get_guild_config(interaction.guild_id)
-        dm_role_id = config.get("dm_role_id")
-        is_dm = bool(dm_role_id) and any(role.id == int(dm_role_id) for role in interaction.user.roles)
-
-        # ตรวจสอบว่าเป็นเจ้าของเควส (ผู้จอง) หรือไม่ — ให้กดจบเควสได้ด้วย
-        is_owner = False
-        content = interaction.message.content or ""
-        for line in content.split('\n'):
-            if "**ผู้เล่นที่จอง:**" in line:
-                match = re.search(r'<@(\d+)>', line)
-                if match and match.group(1) == str(interaction.user.id):
-                    is_owner = True
-                break
-
-        if not (is_dm or is_owner):
-            await interaction.response.send_message(
-                "❌ ปุ่มนี้ใช้ได้เฉพาะ DM หรือผู้จองเควสนี้เท่านั้น",
-                ephemeral=True
-            )
-            return
-
-        await interaction.response.defer(ephemeral=False)  # ส่งข้อความแจ้งเป็นสาธารณะให้ทุกคนเห็น
-
-        thread = interaction.channel
-        old_name = thread.name
-
-        # 🏷️ แปะ Tag "✅ จบเควสแล้ว" ให้กับกระทู้นี้ (ใช้เฉพาะ Tag ที่มีอยู่แล้ว ไม่สร้างใหม่)
-        forum = getattr(thread, "parent", None)
-        if isinstance(forum, discord.ForumChannel):
-            # หา Tag "✅ จบเควสแล้ว" จากที่มีอยู่แล้วในห้อง (ถ้าไม่มีก็ข้าม ไม่สร้างใหม่)
-            complete_tag = discord.utils.get(forum.available_tags, name="✅ จบเควสแล้ว")
-            if complete_tag:
-                current_tags = list(getattr(thread, "applied_tags", []) or [])
-                if complete_tag.id not in {t.id for t in current_tags}:
-                    current_tags.append(complete_tag)
-                    try:
-                        await thread.edit(applied_tags=current_tags[:5])
-                    except Exception:
-                        pass
-
-        # เพิ่ม prefix [✅ จบแล้ว] ในชื่อกระทู้ ถ้ายังไม่มี
-        if not old_name.startswith("[✅ จบแล้ว]"):
-            new_name = f"[✅ จบแล้ว] {old_name}"[:100]
-            try:
-                await thread.edit(name=new_name)
-            except Exception:
-                pass
-
-        # ส่งข้อความแจ้งในกระทู้
-        await interaction.followup.send(
-            f"✅ **เควสจบเรียบร้อยแล้ว!** ขอบคุณที่ร่วมเล่นครับ 🎉\n(ปุ่มทั้งหมดจะถูกปิดใช้งาน)",
-            ephemeral=False,
-        )
-
-        # 💡 ไม่ปิดปุ่ม — ปุ่มทั้งหมดคงอยู่กดได้ต่อ (ถ้าอนาคตอยากปิด ให้เอาโค้ดด้านล่างกลับมาใช้)
-        # try:
-        #     await interaction.message.edit(view=None)
-        # except Exception:
-        #     pass
-
-    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
-        await _handle_view_error(interaction, error, item)
-
-
-# ============================================================
-# 🏷️ ตัวเลือก Tag สำหรับตอนจองเควส (3 หัวข้อ) — สามารถแก้ไขรายการได้ตรงนี้
-# ============================================================
-QUEST_TYPE_OPTIONS = ["One Shot", "Short Adventure"]
-PAYMENT_OPTIONS = ["Donation", "Payment"]
-TIER_OPTIONS = ["Lv. 1-4", "Lv. 5-10", "Lv. 11-16", "Lv. 17-20"]
-
-
 async def _get_or_create_forum_tags(forum_channel: discord.ForumChannel, tag_names: list) -> list:
-    """หา Tag จากชื่อ ถ้าไม่มีให้สร้างใหม่อัตโนมัติ (ถ้าบอทมีสิทธิ์) คืน list ของ ForumTag (สูงสุด 5 อัน)"""
+    """หา Tag จากชื่อ ถ้าไม่มีให้สร้างใหม่อัตโนมัติ (ใช้สำหรับตอนจองเควส 3 หัวข้อ)"""
     result = []
     existing = {t.name.lower(): t for t in forum_channel.available_tags}
     for name in tag_names:
@@ -296,16 +122,191 @@ async def _get_or_create_forum_tags(forum_channel: discord.ForumChannel, tag_nam
                 result.append(new_tag)
                 existing[key] = new_tag
             except (discord.Forbidden, discord.HTTPException):
-                pass  # ไม่มีสิทธิ์สร้าง หรือสร้างไม่สำเร็จ ข้ามไป
-    return result[:5]  # Discord จำกัดสูงสุด 5 tags ต่อกระทู้
+                pass 
+    return result[:5] 
+
+async def _find_matching_tag(forum_channel: discord.ForumChannel, target_name: str):
+    """ค้นหา Tag ที่ตรงหรือใกล้เคียงกับชื่อที่ระบุ โดยไม่สร้างใหม่ (ใช้สำหรับตอนกดจบเควส)"""
+    tags = forum_channel.available_tags
+    if not tags:
+        return None
+    target_key = target_name.lower().strip()
+    
+    for tag in tags:
+        if tag.name.lower().strip() == target_key:
+            return tag
+    for tag in tags:
+        if tag.name.lower().startswith(target_key):
+            return tag
+            
+    keywords = ["จบเควส", "จบ", "เควสแล้ว", "จบแล้ว", "complete", "done", "finished"]
+    for kw in keywords:
+        for tag in tags:
+            if kw in tag.name.lower():
+                return tag
+    return None
 
 
 # ============================================================
-# 📋 View: เลือก Tag 3 หัวข้อตอนจองเควส (ขั้นตอนที่ 1 ก่อนกรอกเวลา)
+# 🛡️ Custom Check: ตรวจสอบว่าผู้ใช้มี DM Role
 # ============================================================
+def is_dm_role():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        config = get_guild_config(interaction.guild_id)
+        dm_role_id = config.get("dm_role_id")
+        if not dm_role_id:
+            raise app_commands.CheckFailure(
+                "เซิร์ฟเวอร์นี้ยังไม่ได้ตั้งค่า DM Role — ให้ผู้ดูแลใช้คำสั่ง /setup ก่อน"
+            )
+        return any(role.id == int(dm_role_id) for role in interaction.user.roles)
+    return app_commands.check(predicate)
+
+
+# ============================================================
+# 🛠️ Modal & View สำหรับการ "แก้ไขเวลา" และ "จบเควส"
+# ============================================================
+class EditTimeModal(discord.ui.Modal, title="เลื่อน / แก้ไขเวลา"):
+    new_schedule = discord.ui.TextInput(
+        label="ระบุวันและเวลาใหม่",
+        placeholder="เช่น 02/12/26 21.00",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=50,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        message = interaction.message
+        thread = interaction.channel
+        
+        old_content = message.content
+        lines = old_content.split('\n')
+        new_lines = []
+        for line in lines:
+            if line.startswith("🗓️ **วันเวลาที่สะดวก:**"):
+                new_lines.append(f"🗓️ **วันเวลาที่สะดวก:** {self.new_schedule.value}")
+            else:
+                new_lines.append(line)
+        new_content = '\n'.join(new_lines)
+        
+        history_line = f"✏️ **แก้ไขเวลาล่าสุด:** {self.new_schedule.value} (โดย {interaction.user.display_name})"
+        hist_lines = new_content.split('\n')
+        hist_lines = [l for l in hist_lines if not l.startswith("✏️ **แก้ไขเวลาล่าสุด:**")]
+        hist_lines.append(history_line)
+        new_content = '\n'.join(hist_lines)
+        
+        try:
+            await message.edit(content=new_content)
+            await interaction.followup.send(
+                "✅ แก้ไขเวลานัดหมายเรียบร้อยแล้ว!\n💡 สามารถแก้ไขได้อีกครั้งได้ตลอดเลยครับ",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ เกิดข้อผิดพลาดในการอัปเดต: {e}", ephemeral=True)
+
+class EditTimeView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="⏳ เลื่อน/แก้ไขเวลา",
+        style=discord.ButtonStyle.primary,
+        custom_id="quest:edit_time"
+    )
+    async def edit_time_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        config = get_guild_config(interaction.guild_id)
+        dm_role_id = config.get("dm_role_id")
+        is_dm = bool(dm_role_id) and any(role.id == int(dm_role_id) for role in interaction.user.roles)
+        
+        is_owner = False
+        content = interaction.message.content or ""
+        for line in content.split('\n'):
+            if "**ผู้เล่นที่จอง:**" in line:
+                match = re.search(r'<@(\d+)>', line)
+                if match and match.group(1) == str(interaction.user.id):
+                    is_owner = True
+                break
+                
+        if not (is_owner or is_dm):
+            await interaction.response.send_message(
+                "❌ คุณไม่ใช่ผู้จองเควสนี้ หรือไม่ใช่ DM ไม่สามารถแก้ไขเวลาได้ครับ",
+                ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(EditTimeModal())
+
+    @discord.ui.button(
+        label="✅ จบเควสแล้ว",
+        style=discord.ButtonStyle.success,
+        custom_id="quest:end_quest"
+    )
+    async def end_quest_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        config = get_guild_config(interaction.guild_id)
+        dm_role_id = config.get("dm_role_id")
+        
+        is_dm = bool(dm_role_id) and any(role.id == int(dm_role_id) for role in interaction.user.roles)
+        has_extra_role = any(role.id in EXTRA_END_QUEST_ROLES for role in interaction.user.roles)
+        
+        is_owner = False
+        content = interaction.message.content or ""
+        for line in content.split('\n'):
+            if "**ผู้เล่นที่จอง:**" in line:
+                match = re.search(r'<@(\d+)>', line)
+                if match and match.group(1) == str(interaction.user.id):
+                    is_owner = True
+                break
+                
+        if not (is_dm or is_owner or has_extra_role):
+            await interaction.response.send_message(
+                "❌ ปุ่มนี้ใช้ได้เฉพาะ DM, ผู้จองเควส, หรือผู้มีสิทธิ์เท่านั้น",
+                ephemeral=True
+            )
+            return
+            
+        await interaction.response.defer(ephemeral=False) 
+        
+        thread = interaction.channel
+        old_name = thread.name
+        
+        forum = getattr(thread, "parent", None)
+        if isinstance(forum, discord.ForumChannel):
+            end_tag = await _find_matching_tag(forum, "✅ จบเควสแล้ว")
+            if end_tag:
+                current_tags = list(getattr(thread, "applied_tags", []) or [])
+                existing_ids = {t.id for t in current_tags}
+                if end_tag.id not in existing_ids:
+                    current_tags.append(end_tag)
+                    try:
+                        await thread.edit(applied_tags=current_tags[:5])
+                    except Exception:
+                        pass
+                        
+        if not old_name.startswith("[✅ จบแล้ว]"):
+            new_name = f"[✅ จบแล้ว] {old_name}"[:100]
+            try:
+                await thread.edit(name=new_name)
+            except Exception:
+                pass
+                
+        await interaction.followup.send(
+            f"✅ **เควสจบเรียบร้อยแล้ว!** ขอบคุณที่ร่วมเล่นครับ 🎉",
+            ephemeral=False,
+        )
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
+        await _handle_view_error(interaction, error, item)
+
+
+# ============================================================
+# 🏷️ ตัวเลือก Tag สำหรับตอนจองเควส
+# ============================================================
+QUEST_TYPE_OPTIONS = ["One Shot", "Short Adventure"]
+PAYMENT_OPTIONS = ["Donation", "Payment"]
+TIER_OPTIONS = ["Lv. 1-4", "Lv. 5-10", "Lv. 11-16", "Lv. 17-20"]
+
 class TagSelectView(discord.ui.View):
     def __init__(self, quest_title: str, quest_description: str, recommended_level: str, image_url: str = None):
-        super().__init__(timeout=300)  # หมดอายุใน 5 นาที
+        super().__init__(timeout=300)
         self.quest_title = quest_title
         self.quest_description = quest_description
         self.recommended_level = recommended_level
@@ -368,7 +369,7 @@ class TagSelectView(discord.ui.View):
 
 
 # ============================================================
-# 🧩 Modal: หน้าต่างกรอกวันเวลาของผู้เล่นตอนจองครั้งแรก
+# 🧩 Modal: หน้าต่างกรอกวันเวลา
 # ============================================================
 class BookingModal(discord.ui.Modal, title="จองเควส"):
     schedule = discord.ui.TextInput(
@@ -388,32 +389,29 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
         self.selected_tags = selected_tags or []
 
     async def on_submit(self, interaction: discord.Interaction):
-        # 🔑 ดึงห้อง Join เควสจาก config ของเซิร์ฟเวอร์นี้
         config = get_guild_config(interaction.guild_id)
         join_forum_id = config.get("quest_join_forum_id")
-
+        
         if not join_forum_id:
             await interaction.response.send_message(
                 "❌ เซิร์ฟเวอร์นี้ยังไม่ได้ตั้งค่าห้อง Join เควส — ให้ผู้ดูแลใช้คำสั่ง /setup ก่อน",
                 ephemeral=True,
             )
             return
-
+            
         join_forum = interaction.client.get_channel(int(join_forum_id))
-
         if not isinstance(join_forum, discord.ForumChannel):
             await interaction.response.send_message(
-                "❌ ห้อง Join เควสที่ตั้งค่าไว้ไม่ถูกต้อง (ต้องเป็น Forum Channel) — ให้ผู้ดูแลใช้ /setup ตั้งค่าใหม่",
+                "❌ ห้อง Join เควสที่ตั้งค่าไว้ไม่ถูกต้อง (ต้องเป็น Forum Channel)",
                 ephemeral=True,
             )
             return
-
+            
         await interaction.response.defer(ephemeral=True)
-
-        # จัดการเวลา: ถ้าผู้เล่นไม่กรอกก็ไม่บังคับ ใช้ข้อความเริ่มต้น
+        
         schedule_text = self.schedule.value.strip() if self.schedule.value else ""
         schedule_display = schedule_text if schedule_text else "⏳ ยังไม่ระบุเวลา (จะแจ้งภายหลัง)"
-
+        
         content = (
             f"📥 **บันทึกการจองเควส:** {self.quest_title}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -422,7 +420,7 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
             f"⚔️ **เลเวลที่แนะนำ:** {self.recommended_level}\n\n"
             f"📜 **รายละเอียดเควส:**\n{self.quest_description}"
         )
-
+        
         file_to_send = None
         if self.image_url:
             try:
@@ -435,33 +433,33 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
                             content += f"\n\n{self.image_url}"
             except Exception:
                 content += f"\n\n{self.image_url}"
-
-        # ชื่อกระทู้: ถ้ามีเวลาจากการจองให้ใส่หน้าชื่อ ถ้าไม่มีก็ไม่ใส่
+                
+        # หากผู้เล่นกรอกเวลา ให้แสดงเวลาไว้หน้าชื่อกระทู้ด้วย
         if schedule_text:
             thread_name = f"[{schedule_text}] {self.quest_title} - {interaction.user.display_name}"[:100]
         else:
             thread_name = f"{self.quest_title} - {interaction.user.display_name}"[:100]
-
+            
         kwargs = {
             "name": thread_name,
             "content": content,
             "allowed_mentions": discord.AllowedMentions(users=[interaction.user]),
             "view": EditTimeView()
         }
-
-        # 🏷️ ใช้ Tag ที่ผู้ใช้เลือกเอง (หา/สร้างในห้อง Forum อัตโนมัติ) ถ้าไม่มีให้บอทเลือกอัตโนมัติ
+        
         if self.selected_tags:
             applied_tags = await _get_or_create_forum_tags(join_forum, self.selected_tags)
         else:
             applied_tags = []
+            
         if not applied_tags:
             applied_tags = _pick_forum_tags(join_forum)
         if applied_tags:
             kwargs["applied_tags"] = applied_tags
-
+            
         if file_to_send:
             kwargs["file"] = file_to_send
-
+            
         await join_forum.create_thread(**kwargs)
         await interaction.followup.send("✅ ส่งคำขอจองเควสสำเร็จแล้ว! รอ DM ติดต่อกลับได้เลย", ephemeral=True)
 
@@ -484,7 +482,7 @@ class BookingView(discord.ui.View):
         quest_description = "-"
         recommended_level = "ไม่ระบุ"
         image_url = None
-
+        
         if message.content:
             lines = message.content.split('\n')
             for line in lines:
@@ -492,23 +490,20 @@ class BookingView(discord.ui.View):
                     quest_title = line.replace("📌 **เควส:**", "").strip()
                 elif line.startswith("⚔️ **เลเวลที่แนะนำ:**"):
                     recommended_level = line.replace("⚔️ **เลเวลที่แนะนำ:**", "").strip()
-
             if "📜 **รายละเอียด:**" in message.content:
                 quest_description = message.content.split("📜 **รายละเอียด:**")[1].strip()
-
                 desc_lines = quest_description.split('\n')
                 if desc_lines and desc_lines[-1].startswith(("http://", "https://")):
                     desc_lines.pop()
                     quest_description = "\n".join(desc_lines).strip()
-
+                    
         if message.attachments:
             image_url = message.attachments[0].url
         else:
             last_line = message.content.split('\n')[-1].strip()
             if last_line.startswith(("http://", "https://")):
                 image_url = last_line
-
-        # ตรวจสอบว่าตั้งค่าห้อง Join เควสแล้วหรือไม่ ก่อนให้เลือก Tag
+                
         config = get_guild_config(interaction.guild_id)
         if not config.get("quest_join_forum_id"):
             await interaction.response.send_message(
@@ -516,8 +511,7 @@ class BookingView(discord.ui.View):
                 ephemeral=True,
             )
             return
-
-        # 📋 ขั้นตอนที่ 1: ให้ผู้ใช้เลือก Tag 3 หัวข้อจาก dropdown
+            
         view = TagSelectView(quest_title, quest_description, recommended_level, image_url)
         await interaction.response.send_message(
             "📋 **ขั้นตอนที่ 1/2: เลือก Tag สำหรับเควสนี้**\n"
@@ -548,12 +542,11 @@ class QuestBot(commands.Bot):
         print(f"✅ รองรับหลายเซิร์ฟเวอร์! ในแต่ละเซิร์ฟเวอร์ ให้ Admin ใช้ /setup ตั้งค่า แล้วพิมพ์ !sync")
         print(f"📋 จำนวนเซิร์ฟเวอร์ที่บอทเข้าร่วม: {len(self.guilds)}")
 
-
 bot = QuestBot()
 
 
 # ============================================================
-# 🔧 คำสั่งพิเศษสำหรับ Owner (ซิงค์ Slash Command ลงแต่ละเซิร์ฟเวอร์)
+# 🔧 คำสั่งพิเศษสำหรับ Owner
 # ============================================================
 @bot.command()
 @commands.is_owner()
@@ -565,20 +558,13 @@ async def sync(ctx):
     except Exception as e:
         await ctx.send(f"❌ เกิดข้อผิดพลาดในการซิงค์: {e}")
 
-
-# ============================================================
-# 🧹 คำสั่งพิเศษ: ล้าง Slash Command ทั้งหมดแล้วซิงค์ใหม่ (แก้ CommandSignatureMismatch)
-# ============================================================
 @bot.command()
 @commands.is_owner()
 async def clear_sync(ctx):
-    """ใช้เมื่อขึ้น error 'CommandSignatureMismatch' — ล้างคำสั่งเก่าทั้งหมดแล้วลงทะเบียนใหม่"""
     try:
         await ctx.send("🧹 กำลังล้าง Slash Command เก่าทั้งหมด...")
-        # ล้างทุกคำสั่งใน guild นี้ (ใน memory) แล้ว sync เพื่อลบออกจาก Discord จริง
         bot.tree.clear_commands(guild=ctx.guild)
         await bot.tree.sync(guild=ctx.guild)
-        # คัดลอก global commands มาแล้ว sync ใหม่
         bot.tree.copy_global_to(guild=ctx.guild)
         synced = await bot.tree.sync(guild=ctx.guild)
         await ctx.send(
@@ -590,7 +576,7 @@ async def clear_sync(ctx):
 
 
 # ============================================================
-# ⚙️ Slash Command: /setup — ตั้งค่าบอทสำหรับเซิร์ฟเวอร์นี้ (ครั้งเดียวต่อเซิร์ฟเวอร์)
+# ⚙️ Slash Command: /setup & /show_config
 # ============================================================
 @bot.tree.command(name="setup", description="ตั้งค่าบอท Quest สำหรับเซิร์ฟเวอร์นี้ (เฉพาะผู้ดูแล)")
 @app_commands.describe(
@@ -616,10 +602,6 @@ async def setup(
         ephemeral=True,
     )
 
-
-# ============================================================
-# 📋 Slash Command: /show_config — แสดงการตั้งค่าปัจจุบัน
-# ============================================================
 @bot.tree.command(name="show_config", description="แสดงการตั้งค่าบอทของเซิร์ฟเวอร์นี้ (เฉพาะผู้ดูแล)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def show_config(interaction: discord.Interaction):
@@ -630,45 +612,34 @@ async def show_config(interaction: discord.Interaction):
             ephemeral=True,
         )
         return
-
+        
     join_forum_id = config.get("quest_join_forum_id")
     dm_role_id = config.get("dm_role_id")
-
     join_forum = interaction.client.get_channel(int(join_forum_id)) if join_forum_id else None
     dm_role = interaction.guild.get_role(int(dm_role_id)) if dm_role_id else None
-
+    
     lines = ["📋 **การตั้งค่าปัจจุบันของเซิร์ฟเวอร์นี้:**\n"]
     lines.append(f"📌 ห้อง Join เควส: {join_forum.mention if join_forum else '❌ ไม่พบห้อง (ตั้งค่าใหม่ด้วย /setup)'}")
     lines.append(f"👑 DM Role: {dm_role.mention if dm_role else '❌ ไม่พบ Role (ตั้งค่าใหม่ด้วย /setup)'}")
-
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
 # ============================================================
 # 🧙 Slash Command: /create_quest
-#    🔑 quest_board เป็นการเลือกห้อง Forum โดยตรงจาก dropdown — ใช้ได้ทุกเซิร์ฟเวอร์ทันที!
-# ============================================================
-
-# ============================================================
-# 🏷️ Autocomplete: แสดงรายการ Tag ของห้อง Forum ที่ผู้ใช้เลือกไว้ ให้เลือกเองได้
 # ============================================================
 async def autocomplete_quest_tags(interaction: discord.Interaction, current: str):
-    """ดึงรายการ Tag จากห้อง Forum ที่ผู้ใช้เลือกไว้แล้ว มาแสดงเป็น dropdown ให้เลือกเอง"""
     quest_board = getattr(interaction.namespace, "quest_board", None)
     if not quest_board or not isinstance(quest_board, discord.ForumChannel):
         return []
     tags = quest_board.available_tags
     if not tags:
         return []
-    # กรองตามที่ผู้ใช้พิมพ์ (ถ้ามี)
     if current:
         tags = [t for t in tags if current.lower() in t.name.lower()]
-    # Discord จำกัดรายการ autocomplete สูงสุด 25 รายการ
     return [
         app_commands.Choice(name=tag.name[:100], value=str(tag.id))
         for tag in tags[:25]
     ]
-
 
 @bot.tree.command(name="create_quest", description="สร้างเควสใหม่บนกระดานเควสพร้อมรูปภาพ (เฉพาะ DM)")
 @app_commands.describe(
@@ -697,11 +668,9 @@ async def create_quest(
         image_file: discord.Attachment = None,
         image_url: str = None
 ):
-    # quest_board เป็น ForumChannel object โดยตรง — ไม่ต้อง get_channel ด้วย ID อีกต่อไป
     board_forum = quest_board
-
     await interaction.response.defer(ephemeral=True)
-
+    
     content = (
         f"📌 **เควส:** {title}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -710,9 +679,8 @@ async def create_quest(
         f"👑 **DM:** {dm_name}\n\n"
         f"📜 **รายละเอียด:**\n{description}"
     )
-
+    
     file_to_send = None
-
     if image_file:
         if any(image_file.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
             file_to_send = await image_file.to_file()
@@ -728,14 +696,13 @@ async def create_quest(
                             content += f"\n\n{image_url}"
             except Exception:
                 content += f"\n\n{image_url}"
-
+                
     kwargs = {
         "name": title,
         "content": content,
         "view": BookingView()
     }
-
-    # 🏷️ เลือก tag: ถ้าผู้ใช้เลือกเองให้ใช้ของเขา ถ้าไม่บอทจะเลือกอัตโนมัติ
+    
     if quest_tag:
         try:
             tag_id = int(quest_tag)
@@ -745,12 +712,12 @@ async def create_quest(
             applied_tags = _pick_forum_tags(board_forum)
     else:
         applied_tags = _pick_forum_tags(board_forum)
+        
     if applied_tags:
         kwargs["applied_tags"] = applied_tags
-
     if file_to_send:
         kwargs["file"] = file_to_send
-
+        
     await board_forum.create_thread(**kwargs)
     await interaction.followup.send(f"✅ สร้างเควสในห้อง {board_forum.mention} เรียบร้อยแล้ว", ephemeral=True)
 
@@ -760,11 +727,10 @@ async def create_quest(
 # ============================================================
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    # ดึง error ตัวจริงออกมา (CommandInvokeError จะห่อหุ้ม error ที่เกิดจริง)
     original = getattr(error, "original", error)
     print(f"[Command Error] {type(original).__name__}: {original!r}")
     traceback.print_exception(type(original), original, original.__traceback__)
-
+    
     if isinstance(error, app_commands.MissingRole):
         msg = "⛔ คุณไม่มีสิทธิ์ใช้คำสั่งนี้"
     elif isinstance(error, app_commands.MissingPermissions):
@@ -787,7 +753,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             f"รายละเอียด: {error_msg}\n\n"
             f"กรุณาส่งข้อความนี้ (พร้อม log ใน Terminal) ให้ผู้พัฒนาเพื่อตรวจสอบต่อ"
         )
-
+        
     if interaction.response.is_done():
         await interaction.followup.send(msg, ephemeral=True)
     else:
