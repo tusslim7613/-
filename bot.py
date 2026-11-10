@@ -205,6 +205,101 @@ class EditTimeView(discord.ui.View):
 
 
 # ============================================================
+# 🏷️ ตัวเลือก Tag สำหรับตอนจองเควส (3 หัวข้อ) — สามารถแก้ไขรายการได้ตรงนี้
+# ============================================================
+QUEST_TYPE_OPTIONS = ["One Shot", "Short Adventure"]
+PAYMENT_OPTIONS = ["Donation", "Payment"]
+TIER_OPTIONS = ["Lv. 1-4", "Lv. 5-10", "Lv. 11-16", "Lv. 17-20"]
+
+
+async def _get_or_create_forum_tags(forum_channel: discord.ForumChannel, tag_names: list) -> list:
+    """หา Tag จากชื่อ ถ้าไม่มีให้สร้างใหม่อัตโนมัติ (ถ้าบอทมีสิทธิ์) คืน list ของ ForumTag (สูงสุด 5 อัน)"""
+    result = []
+    existing = {t.name.lower(): t for t in forum_channel.available_tags}
+    for name in tag_names:
+        key = str(name).lower().strip()
+        if not key:
+            continue
+        if key in existing:
+            result.append(existing[key])
+        else:
+            try:
+                new_tag = await forum_channel.create_tag(name=str(name))
+                result.append(new_tag)
+                existing[key] = new_tag
+            except (discord.Forbidden, discord.HTTPException):
+                pass  # ไม่มีสิทธิ์สร้าง หรือสร้างไม่สำเร็จ ข้ามไป
+    return result[:5]  # Discord จำกัดสูงสุด 5 tags ต่อกระทู้
+
+
+# ============================================================
+# 📋 View: เลือก Tag 3 หัวข้อตอนจองเควส (ขั้นตอนที่ 1 ก่อนกรอกเวลา)
+# ============================================================
+class TagSelectView(discord.ui.View):
+    def __init__(self, quest_title: str, quest_description: str, recommended_level: str, image_url: str = None):
+        super().__init__(timeout=300)  # หมดอายุใน 5 นาที
+        self.quest_title = quest_title
+        self.quest_description = quest_description
+        self.recommended_level = recommended_level
+        self.image_url = image_url
+        self.selected_tags = []
+
+    @discord.ui.select(
+        placeholder="1. ประเภทเควส: One Short / Short Adventure",
+        options=[discord.SelectOption(label=opt, value=opt) for opt in QUEST_TYPE_OPTIONS],
+        custom_id="quest:tag_type",
+        min_values=1, max_values=1,
+    )
+    async def select_type(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.selected_tags.append(select.values[0])
+        select.placeholder = f"✅ {select.values[0]}"
+        select.disabled = True
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.select(
+        placeholder="2. Payment: Donation / Commission",
+        options=[discord.SelectOption(label=opt, value=opt) for opt in PAYMENT_OPTIONS],
+        custom_id="quest:tag_payment",
+        min_values=1, max_values=1,
+    )
+    async def select_payment(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.selected_tags.append(select.values[0])
+        select.placeholder = f"✅ {select.values[0]}"
+        select.disabled = True
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.select(
+        placeholder="3. Level/Tier: Tier 1 / Tier 2 / Tier 3",
+        options=[discord.SelectOption(label=opt, value=opt) for opt in TIER_OPTIONS],
+        custom_id="quest:tag_tier",
+        min_values=1, max_values=1,
+    )
+    async def select_tier(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.selected_tags.append(select.values[0])
+        select.placeholder = f"✅ {select.values[0]}"
+        select.disabled = True
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(
+        label="ถัดไป → กรอกเวลา",
+        style=discord.ButtonStyle.primary,
+        custom_id="quest:tag_next",
+    )
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if len(self.selected_tags) < 3:
+            await interaction.response.send_message(
+                f"⚠️ ยังเลือกไม่ครบ ({len(self.selected_tags)}/3 หัวข้อ) กรุณาแตะเลือกให้ครบทั้ง 3 ช่องก่อน",
+                ephemeral=True,
+            )
+            return
+        modal = BookingModal(
+            self.quest_title, self.quest_description, self.recommended_level, self.image_url,
+            selected_tags=self.selected_tags,
+        )
+        await interaction.response.send_modal(modal)
+
+
+# ============================================================
 # 🧩 Modal: หน้าต่างกรอกวันเวลาของผู้เล่นตอนจองครั้งแรก
 # ============================================================
 class BookingModal(discord.ui.Modal, title="จองเควส"):
@@ -216,12 +311,13 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
         max_length=50,
     )
 
-    def __init__(self, quest_title: str, quest_description: str, recommended_level: str, image_url: str = None):
+    def __init__(self, quest_title: str, quest_description: str, recommended_level: str, image_url: str = None, selected_tags: list = None):
         super().__init__()
         self.quest_title = quest_title
         self.quest_description = quest_description
         self.recommended_level = recommended_level
         self.image_url = image_url
+        self.selected_tags = selected_tags or []
 
     async def on_submit(self, interaction: discord.Interaction):
         # 🔑 ดึงห้อง Join เควสจาก config ของเซิร์ฟเวอร์นี้
@@ -277,8 +373,13 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
             "view": EditTimeView()
         }
 
-        # 🏷️ เพิ่ม tag อัตโนมัติถ้าห้อง Forum บังคับใส่ tag
-        applied_tags = _pick_forum_tags(join_forum)
+        # 🏷️ ใช้ Tag ที่ผู้ใช้เลือกเอง (หา/สร้างในห้อง Forum อัตโนมัติ) ถ้าไม่มีให้บอทเลือกอัตโนมัติ
+        if self.selected_tags:
+            applied_tags = await _get_or_create_forum_tags(join_forum, self.selected_tags)
+        else:
+            applied_tags = []
+        if not applied_tags:
+            applied_tags = _pick_forum_tags(join_forum)
         if applied_tags:
             kwargs["applied_tags"] = applied_tags
 
@@ -331,8 +432,22 @@ class BookingView(discord.ui.View):
             if last_line.startswith(("http://", "https://")):
                 image_url = last_line
 
-        await interaction.response.send_modal(
-            BookingModal(quest_title, quest_description, recommended_level, image_url)
+        # ตรวจสอบว่าตั้งค่าห้อง Join เควสแล้วหรือไม่ ก่อนให้เลือก Tag
+        config = get_guild_config(interaction.guild_id)
+        if not config.get("quest_join_forum_id"):
+            await interaction.response.send_message(
+                "❌ เซิร์ฟเวอร์นี้ยังไม่ได้ตั้งค่าห้อง Join เควส — ให้ผู้ดูแลใช้คำสั่ง /setup ก่อน",
+                ephemeral=True,
+            )
+            return
+
+        # 📋 ขั้นตอนที่ 1: ให้ผู้ใช้เลือก Tag 3 หัวข้อจาก dropdown
+        view = TagSelectView(quest_title, quest_description, recommended_level, image_url)
+        await interaction.response.send_message(
+            "📋 **ขั้นตอนที่ 1/2: เลือก Tag สำหรับเควสนี้**\n"
+            "แตะเลือกให้ครบทั้ง 3 ช่อง แล้วกดปุ่ม **'ถัดไป → กรอกเวลา'**",
+            view=view,
+            ephemeral=True,
         )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
@@ -457,6 +572,28 @@ async def show_config(interaction: discord.Interaction):
 # 🧙 Slash Command: /create_quest
 #    🔑 quest_board เป็นการเลือกห้อง Forum โดยตรงจาก dropdown — ใช้ได้ทุกเซิร์ฟเวอร์ทันที!
 # ============================================================
+
+# ============================================================
+# 🏷️ Autocomplete: แสดงรายการ Tag ของห้อง Forum ที่ผู้ใช้เลือกไว้ ให้เลือกเองได้
+# ============================================================
+async def autocomplete_quest_tags(interaction: discord.Interaction, current: str):
+    """ดึงรายการ Tag จากห้อง Forum ที่ผู้ใช้เลือกไว้แล้ว มาแสดงเป็น dropdown ให้เลือกเอง"""
+    quest_board = getattr(interaction.namespace, "quest_board", None)
+    if not quest_board or not isinstance(quest_board, discord.ForumChannel):
+        return []
+    tags = quest_board.available_tags
+    if not tags:
+        return []
+    # กรองตามที่ผู้ใช้พิมพ์ (ถ้ามี)
+    if current:
+        tags = [t for t in tags if current.lower() in t.name.lower()]
+    # Discord จำกัดรายการ autocomplete สูงสุด 25 รายการ
+    return [
+        app_commands.Choice(name=tag.name[:100], value=str(tag.id))
+        for tag in tags[:25]
+    ]
+
+
 @bot.tree.command(name="create_quest", description="สร้างเควสใหม่บนกระดานเควสพร้อมรูปภาพ (เฉพาะ DM)")
 @app_commands.describe(
     quest_board="เลือกห้อง Forum กระดานเควสที่ต้องการลง (เช่น Tier 1, Tier 2 ฯลฯ)",
@@ -465,9 +602,11 @@ async def show_config(interaction: discord.Interaction):
     description="คำอธิบายเควส",
     max_players="จำนวนผู้เล่นที่รับ",
     recommended_level="ระดับเลเวลที่แนะนำ (เช่น เลเวล 3, หรือ 1-4)",
+    quest_tag="เลือก Tag สำหรับกระทู้นี้ (ไม่ใส่ก็ได้ บอทจะเลือกอัตโนมัติ)",
     image_file="อัปโหลดรูปภาพโดยตรง (ลากรูปใส่ช่องนี้)",
     image_url="หรือ วางลิงก์รูปภาพเว็บนอก (เช่น https://...)"
 )
+@app_commands.autocomplete(quest_tag=autocomplete_quest_tags)
 @app_commands.guild_only()
 @is_dm_role()
 async def create_quest(
@@ -478,6 +617,7 @@ async def create_quest(
         description: app_commands.Range[str, 1, 1500],
         max_players: app_commands.Range[int, 1, 20],
         recommended_level: app_commands.Range[str, 1, 20],
+        quest_tag: str = None,
         image_file: discord.Attachment = None,
         image_url: str = None
 ):
@@ -519,8 +659,16 @@ async def create_quest(
         "view": BookingView()
     }
 
-    # 🏷️ เพิ่ม tag อัตโนมัติถ้าห้อง Forum บังคับใส่ tag
-    applied_tags = _pick_forum_tags(board_forum)
+    # 🏷️ เลือก tag: ถ้าผู้ใช้เลือกเองให้ใช้ของเขา ถ้าไม่บอทจะเลือกอัตโนมัติ
+    if quest_tag:
+        try:
+            tag_id = int(quest_tag)
+            chosen = discord.utils.get(board_forum.available_tags, id=tag_id)
+            applied_tags = [chosen] if chosen else _pick_forum_tags(board_forum)
+        except (ValueError, TypeError):
+            applied_tags = _pick_forum_tags(board_forum)
+    else:
+        applied_tags = _pick_forum_tags(board_forum)
     if applied_tags:
         kwargs["applied_tags"] = applied_tags
 
