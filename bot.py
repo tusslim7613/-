@@ -2,6 +2,7 @@ import os
 import json
 import re
 import io
+import traceback
 import aiohttp
 import discord
 from discord import app_commands
@@ -50,6 +51,39 @@ def update_guild_config(guild_id: int, **kwargs):
         configs[gid] = {}
     configs[gid].update(kwargs)
     save_configs(configs)
+
+
+# ============================================================
+# 🚨 Helper: จัดการ error ที่เกิดจากปุ่ม (View) — แสดงรายละเอียดให้ชัดเจน
+# ============================================================
+async def _handle_view_error(interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
+    print(f"[View Error] item={getattr(item, 'custom_id', '?')}: {type(error).__name__}: {error!r}")
+    traceback.print_exception(type(error), error, error.__traceback__)
+
+    if isinstance(error, discord.Forbidden):
+        msg = (
+            "⛔ บอทไม่มีสิทธิ์ดำเนินการนี้\n"
+            "สาเหตุที่พบบ่อย: บอทไม่มีสิทธิ์จัดการกระทู้/แก้ไขข้อความในห้องนี้ "
+            "ให้ตรวจสอบสิทธิ์ของบอทในห้อง Forum นั้นๆ (คลิกขวาที่ห้อง → Edit Channel → Permissions)"
+        )
+    elif isinstance(error, discord.HTTPException):
+        msg = f"❌ Discord API Error: {error.status} — {error.text}"
+    else:
+        error_type = type(error).__name__
+        error_msg = str(error)[:200]
+        msg = (
+            f"❌ เกิดข้อผิดพลาด: `{error_type}`\n"
+            f"รายละเอียด: {error_msg}\n\n"
+            f"กรุณาส่งข้อความนี้ (พร้อม log ใน Terminal) ให้ผู้พัฒนาเพื่อตรวจสอบต่อ"
+        )
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -144,6 +178,9 @@ class EditTimeView(discord.ui.View):
             return
 
         await interaction.response.send_modal(EditTimeModal())
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
+        await _handle_view_error(interaction, error, item)
 
 
 # ============================================================
@@ -271,6 +308,9 @@ class BookingView(discord.ui.View):
         await interaction.response.send_modal(
             BookingModal(quest_title, quest_description, recommended_level, image_url)
         )
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
+        await _handle_view_error(interaction, error, item)
 
 
 # ============================================================
@@ -442,15 +482,33 @@ async def create_quest(
 # ============================================================
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    # ดึง error ตัวจริงออกมา (CommandInvokeError จะห่อหุ้ม error ที่เกิดจริง)
+    original = getattr(error, "original", error)
+    print(f"[Command Error] {type(original).__name__}: {original!r}")
+    traceback.print_exception(type(original), original, original.__traceback__)
+
     if isinstance(error, app_commands.MissingRole):
         msg = "⛔ คุณไม่มีสิทธิ์ใช้คำสั่งนี้"
     elif isinstance(error, app_commands.MissingPermissions):
         msg = "⛔ คำสั่งนี้ใช้ได้เฉพาะผู้ดูแลเซิร์ฟเวอร์ (มีสิทธิ์ Manage Server) เท่านั้น"
     elif isinstance(error, app_commands.CheckFailure):
         msg = f"⛔ {error}"
+    elif isinstance(original, discord.Forbidden):
+        msg = (
+            "⛔ บอทไม่มีสิทธิ์ดำเนินการนี้\n"
+            "สาเหตุที่พบบ่อย: บอทไม่มีสิทธิ์สร้าง/จัดการกระทู้ในห้องนั้นๆ "
+            "ให้ตรวจสอบสิทธิ์ของบอทในห้อง Forum นั้น (คลิกขวาที่ห้อง → Edit Channel → Permissions)"
+        )
+    elif isinstance(original, discord.HTTPException):
+        msg = f"❌ Discord API Error: {original.status} — {original.text}"
     else:
-        msg = "❌ เกิดข้อผิดพลาดบางอย่าง กรุณาลองใหม่อีกครั้ง"
-        print(f"[Error] {error!r}")
+        error_type = type(original).__name__
+        error_msg = str(original)[:200]
+        msg = (
+            f"❌ เกิดข้อผิดพลาด: `{error_type}`\n"
+            f"รายละเอียด: {error_msg}\n\n"
+            f"กรุณาส่งข้อความนี้ (พร้อม log ใน Terminal) ให้ผู้พัฒนาเพื่อตรวจสอบต่อ"
+        )
 
     if interaction.response.is_done():
         await interaction.followup.send(msg, ephemeral=True)
