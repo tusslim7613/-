@@ -212,9 +212,19 @@ class EditTimeView(discord.ui.View):
         dm_role_id = config.get("dm_role_id")
         is_dm = bool(dm_role_id) and any(role.id == int(dm_role_id) for role in interaction.user.roles)
 
-        if not is_dm:
+        # ตรวจสอบว่าเป็นเจ้าของเควส (ผู้จอง) หรือไม่ — ให้กดจบเควสได้ด้วย
+        is_owner = False
+        content = interaction.message.content or ""
+        for line in content.split('\n'):
+            if "**ผู้เล่นที่จอง:**" in line:
+                match = re.search(r'<@(\d+)>', line)
+                if match and match.group(1) == str(interaction.user.id):
+                    is_owner = True
+                break
+
+        if not (is_dm or is_owner):
             await interaction.response.send_message(
-                "❌ ปุ่มนี้ใช้ได้เฉพาะ DM (ผู้ที่มียศที่กำหนด) เท่านั้น",
+                "❌ ปุ่มนี้ใช้ได้เฉพาะ DM หรือผู้จองเควสนี้เท่านั้น",
                 ephemeral=True
             )
             return
@@ -224,20 +234,19 @@ class EditTimeView(discord.ui.View):
         thread = interaction.channel
         old_name = thread.name
 
-        # 🏷️ แปะ Tag "✅ จบเควสแล้ว" ให้กับกระทู้นี้ (หาหรือสร้างอัตโนมัติในห้อง Forum)
+        # 🏷️ แปะ Tag "✅ จบเควสแล้ว" ให้กับกระทู้นี้ (ใช้เฉพาะ Tag ที่มีอยู่แล้ว ไม่สร้างใหม่)
         forum = getattr(thread, "parent", None)
         if isinstance(forum, discord.ForumChannel):
-            complete_tags = await _get_or_create_forum_tags(forum, ["✅ จบเควสแล้ว"])
-            if complete_tags:
+            # หา Tag "✅ จบเควสแล้ว" จากที่มีอยู่แล้วในห้อง (ถ้าไม่มีก็ข้าม ไม่สร้างใหม่)
+            complete_tag = discord.utils.get(forum.available_tags, name="✅ จบเควสแล้ว")
+            if complete_tag:
                 current_tags = list(getattr(thread, "applied_tags", []) or [])
-                existing_ids = {t.id for t in current_tags}
-                for t in complete_tags:
-                    if t.id not in existing_ids:
-                        current_tags.append(t)
-                try:
-                    await thread.edit(applied_tags=current_tags[:5])
-                except Exception:
-                    pass
+                if complete_tag.id not in {t.id for t in current_tags}:
+                    current_tags.append(complete_tag)
+                    try:
+                        await thread.edit(applied_tags=current_tags[:5])
+                    except Exception:
+                        pass
 
         # เพิ่ม prefix [✅ จบแล้ว] ในชื่อกระทู้ ถ้ายังไม่มี
         if not old_name.startswith("[✅ จบแล้ว]"):
@@ -427,7 +436,11 @@ class BookingModal(discord.ui.Modal, title="จองเควส"):
             except Exception:
                 content += f"\n\n{self.image_url}"
 
-        thread_name = f"{self.quest_title} - {interaction.user.display_name}"[:100]
+        # ชื่อกระทู้: ถ้ามีเวลาจากการจองให้ใส่หน้าชื่อ ถ้าไม่มีก็ไม่ใส่
+        if schedule_text:
+            thread_name = f"[{schedule_text}] {self.quest_title} - {interaction.user.display_name}"[:100]
+        else:
+            thread_name = f"{self.quest_title} - {interaction.user.display_name}"[:100]
 
         kwargs = {
             "name": thread_name,
